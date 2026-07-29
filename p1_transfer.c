@@ -286,15 +286,25 @@ void P1Upload (
 	item = cJSON_GetObjectItem (json, "error_status");
 	if (item != NULL) {
 		int	status = (int) cJSON_GetNumberValue (item);
-		/* 409 means the proxy already has this residue and 401 that it is not
-		| expecting one; either way keeping the file achieves nothing. */
-		if (status == 409 || status == 401) {
-			sprintf (buf, "P-1 proxy does not need the stage 1 residue for M%lu (status %d), discarding\n",
-				 exponent, status);
+/* Only 409 -- the proxy already has this residue -- means the file is genuinely
+| surplus and can be deleted.
+|
+| 401 is transient and must NOT delete it.  The proxy refuses a residue for an
+| exponent whose result it has not seen yet, and the result travels on the comm
+| thread's own schedule: if that thread is backing off after an earlier error,
+| the residue can easily be offered first.  Deleting here would throw away an
+| hour of stage 1 work because we were merely early.  Retrying next sweep costs
+| nothing.  (proof_upload.c documents the same 401 as "bad user id or PRP result
+| not sent", and likewise only deletes on 409.) */
+		if (status == 409) {
+			sprintf (buf, "P-1 proxy already has the stage 1 residue for M%lu, discarding local copy\n", exponent);
 			OutputStr (COMM_THREAD_NUM, buf);
 			fclose (fd);
 			fd = NULL;
 			_unlink (filename);
+		} else if (status == 401) {
+			sprintf (buf, "P-1 proxy is not expecting the stage 1 residue for M%lu yet; will retry\n", exponent);
+			OutputStr (COMM_THREAD_NUM, buf);
 		} else if (debug) {
 			sprintf (buf, "P-1 upload refused for M%lu, status %d\n", exponent, status);
 			LogMsg (buf);
