@@ -1,0 +1,916 @@
+; Copyright 2011-2025 - Mersenne Research, Inc.  All rights reserved
+; Author:  George Woltman
+; Email: woltman@alum.mit.edu
+;
+
+;;
+;;
+;; All new macros for version 31 of gwnum.  Do an AVX-512 radix-3 step in an FFT.
+;; The forward FFT macros multiply by the sin/cos values at the end of the macro
+;; and the inverse FFTs multiply by the sin/cos values at the start of the macro.
+;; We also implement the Daniel J. Bernstein (DJB) "exponent-1" idea to save sin/cos
+;; memory.
+;;
+;;
+
+;;
+;; ************************************* three-complex-djbfft variants ******************************************
+;;
+
+;; The standard version
+zr3_three_complex_djbfft_preload MACRO
+	zr3_3c_djbfft_cmn_preload
+	ENDM
+zr3_three_complex_djbfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbfft_cmn srcreg,srcinc,d1,noexec,0,0,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+; Like the standard version except vbroadcastsd is used to reduce sin/cos data
+zr3b_three_complex_djbfft_preload MACRO
+	zr3_3c_djbfft_cmn_preload
+	ENDM
+zr3b_three_complex_djbfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbfft_cmn srcreg,srcinc,d1,exec,screg,16,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+; Like b3cl but extracts the sin/cos data to broadcasts from the six-real/three_complex sin/cos table
+; Beware: the six-real/three_complex sin/cos data is unusual in that two sine values are stored
+zr3rb_three_complex_djbfft_preload MACRO
+	zr3_3c_djbfft_cmn_preload
+	ENDM
+zr3rb_three_complex_djbfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbfft_cmn srcreg,srcinc,d1,exec,screg+8,128,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+;; Common code to do a 3-complex FFT.  A 3-complex FFT is:
+;; Res1:  (R1+R2+R3) + (I1+I2+I3)i
+;; Res2:  (R1-.5R2-.866I2-.5R3+.866I3) + (I1-.5I2+.866R2-.5I3-.866R3)i
+;; Res3:  (R1-.5R2+.866I2-.5R3-.866I3) + (I1-.5I2-.866R2-.5I3+.866R3)i
+;; Then multiply 2 of the 3 results by twiddle factors.
+;;
+;; This version runs at a theoretical 10 clocks.  Multiplying sine by .866 early could lead to a 9.5 clock solution that might require unrolling by 4.
+;; Such an optimization might also cause problems by no longer pre-loading the sine value several clocks before needed.  Finally, there is a 9 clock solution
+;; that uses more memory by pre-computing .866*sine.  This optimization not only uses more memory, but is difficult in the zr3rb version.
+;; See earlier checked in versions for these optimizations.
+zr3_3c_djbfft_cmn_preload MACRO
+	vbroadcastsd zmm31, ZMM_P866
+	vbroadcastsd zmm30, ZMM_HALF
+	ENDM
+zr3_3c_djbfft_cmn MACRO srcreg,srcinc,d1,bcast,bcreg,bcsz,screg,scinc,maxrpt,L1pt,L1pd
+IF maxrpt MOD 2 EQ 0
+	IF scinc EQ 0
+	code a version that loads sin/cos values once
+	ENDIF
+	vmovapd	zmm0, [srcreg+0*srcinc+d1]	;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+2*d1]	;; R3
+	vmovapd	zmm2, [srcreg+0*srcinc+d1+64]	;; I2
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]	;; I3					; Intel	Intel   Zen4	Zen5
+	vaddpd	zmm4, zmm0, zmm1		;; r2+ = R2 + R3			; 1-4	n 5	1-3	1-2
+	vaddpd	zmm5, zmm2, zmm3		;; i2+ = I2 + I3			; 1-4	n 5	1-3	1-2
+
+	vsubpd	zmm1, zmm0, zmm1		;; r2- = R2 - R3			; 2-5	n 9	2-4	2-3
+	vsubpd	zmm3, zmm2, zmm3		;; i2- = I2 - I3			; 2-5	n 9	2-4	2-3
+
+	 vmovapd zmm10, [srcreg+1*srcinc+d1]	;; R2
+	 vmovapd zmm11, [srcreg+1*srcinc+2*d1]	;; R3
+	 vmovapd zmm12, [srcreg+1*srcinc+d1+64]	;; I2
+	 vmovapd zmm13, [srcreg+1*srcinc+2*d1+64] ;; I3
+	 vaddpd	zmm14, zmm10, zmm11		;; r2+ = R2 + R3			; 3-6	n 7	3-5	3-4
+	 vaddpd	zmm15, zmm12, zmm13		;; i2+ = I2 + I3			; 3-6	n 7	3-5	3-4
+
+	 vsubpd	zmm11, zmm10, zmm11		;; r2- = R2 - R3			; 4-7	n 9	4-6	4-5
+	 vsubpd	zmm13, zmm12, zmm13		;; i2- = I2 - I3			; 4-7	n 9	4-6	4-5
+
+	vmovapd	zmm0, [srcreg+0*srcinc]		;; R1
+	vmovapd	zmm2, [srcreg+0*srcinc+64]	;; I1
+	zfnmaddpd zmm6, zmm4, zmm30, zmm0	;; r1- = R1 - .5r2+			; 5-8	n 9	4-7	3-6
+	zfnmaddpd zmm7, zmm5, zmm30, zmm2	;; i1- = I1 - .5i2+			; 5-8	n 9	4-7	3-6
+
+	 vmovapd zmm10, [srcreg+1*srcinc]	;; R1						n 7
+	 vmovapd zmm12, [srcreg+1*srcinc+64]	;; I1						n 7
+	vaddpd	zmm0, zmm0, zmm4		;; R1 = R1 + r2+			; 6-9		5-7	5-6
+	vaddpd	zmm2, zmm2, zmm5		;; I1 = I1 + i2+			; 6-9		5-7	5-6
+
+no bcast vmovapd zmm8, [screg+0*scinc+64]	;; cosine/sine
+bcast	vbroadcastsd zmm8, Q [bcreg+0*scinc+bcsz/2] ;; cosine/sine				n 13
+	 zfnmaddpd zmm16, zmm14, zmm30, zmm10	;; r1- = R1 - .5r2+			; 7-10	n 11	5-8	5-8
+	 zfnmaddpd zmm17, zmm15, zmm30, zmm12	;; i1- = I1 - .5i2+			; 7-10	n 11	5-8	5-8
+
+no bcast vmovapd zmm18, [screg+1*scinc+64]	;; cosine/sine
+bcast	 vbroadcastsd zmm18, Q [bcreg+1*scinc+bcsz/2] ;; cosine/sine				n 14
+	 vaddpd	zmm10, zmm10, zmm14		;; R1 = R1 + r2+			; 8-11		6-8	6-7
+	 vaddpd	zmm12, zmm12, zmm15		;; I1 = I1 + i2+			; 8-11		6-8	6-7
+
+no bcast vmovapd zmm9, [screg+0*scinc]		;; sine
+bcast	vbroadcastsd zmm9, Q [bcreg+0*scinc]	;; sine						n 17
+	zfnmaddpd zmm4, zmm3, zmm31, zmm6	;; R2 = r1- - .866*i2-			; 9-12	n 13	8-11	7-10
+	zfmaddpd zmm5, zmm1, zmm31, zmm7	;; I2 = i1- + .866*r2-			; 9-12	n 13	8-11	7-10
+
+no bcast vmovapd zmm19, [screg+1*scinc]		;; sine
+bcast	 vbroadcastsd zmm19, Q [bcreg+1*scinc]	;; sine						n 19
+	zfmaddpd zmm6, zmm3, zmm31, zmm6	;; R3 = r1- + .866*i2-			; 10-13	n 14	9-12	8-11
+	zfnmaddpd zmm7, zmm1, zmm31, zmm7	;; I3 = i1- - .866*r2-			; 10-13	n 14	9-12	8-11
+	zstore	[srcreg+0*srcinc], zmm0		;; Save R1				; 10
+	bump	screg, 2*scinc
+
+	L1prefetchw srcreg+2*srcinc+d1+L1pd, L1pt
+	L1prefetchw srcreg+2*srcinc+2*d1+L1pd, L1pt
+	 zfnmaddpd zmm14, zmm13, zmm31, zmm16	;; R2 = r1- - .866*i2-			; 9-12	n 13	10-13	9-12
+	 zfmaddpd zmm15, zmm11, zmm31, zmm17	;; I2 = i1- + .866*r2-			; 9-12	n 13	10-13	9-12
+	zstore	[srcreg+0*srcinc+64], zmm2	;; Save I1				; 11
+
+	L1prefetchw srcreg+2*srcinc+d1+64+L1pd, L1pt
+	 zfmaddpd zmm16, zmm13, zmm31, zmm16	;; R3 = r1- + .866*i2-			; 10-13	n 14	11-14	10-13
+	 zfnmaddpd zmm17, zmm11, zmm31, zmm17	;; I3 = i1- - .866*r2-			; 10-13	n 14	11-14	10-13
+	 zstore	[srcreg+1*srcinc], zmm10	;; Save R1				; 12
+
+	L1prefetchw srcreg+2*srcinc+2*d1+64+L1pd, L1pt
+	L1prefetchw srcreg+3*srcinc+d1+L1pd, L1pt
+	zfmsubpd zmm1, zmm4, zmm8, zmm5		;; R2 = R2 * cosine/sine - I2		; 13-16	n 17	12-15	11-14
+	zfmaddpd zmm5, zmm5, zmm8, zmm4		;; I2 = I2 * cosine/sine + R2		; 13-16	n 17	12-15	11-14
+	 zstore	[srcreg+1*srcinc+64], zmm12	;; Save I1				; 13
+
+	L1prefetchw srcreg+3*srcinc+2*d1+L1pd, L1pt
+	zfmaddpd zmm3, zmm6, zmm8, zmm7		;; R3 = R3 * cosine/sine + I3		; 14-17	n 18	13-16	12-15
+	zfmsubpd zmm7, zmm7, zmm8, zmm6		;; I3 = I3 * cosine/sine - R3		; 14-17	n 18	13-16	12-15
+	zloop_unrolled_one
+
+	L1prefetchw srcreg+3*srcinc+d1+64+L1pd, L1pt
+	 zfmsubpd zmm11, zmm14, zmm18, zmm15	;; R2 = R2 * cosine/sine - I2		; 15-18	n 19	14-17	13-16
+	 zfmaddpd zmm15, zmm15, zmm18, zmm14	;; I2 = I2 * cosine/sine + R2		; 15-18	n 19	14-17	13-16
+
+	L1prefetchw srcreg+3*srcinc+2*d1+64+L1pd, L1pt
+	 zfmaddpd zmm13, zmm16, zmm18, zmm17	;; R3 = R3 * cosine/sine + I3		; 16-19	n 20	15-18	14-17
+	 zfmsubpd zmm17, zmm17, zmm18, zmm16	;; I3 = I3 * cosine/sine - R3		; 16-19	n 20	15-18	14-17
+
+	L1prefetchw srcreg+2*srcinc+L1pd, L1pt
+	vmulpd	zmm1, zmm1, zmm9		;; R2 = R2 * sine			; 17-20		16-18	15-17
+	vmulpd	zmm5, zmm5, zmm9		;; I2 = I2 * sine			; 17-20		16-18	15-17
+
+	L1prefetchw srcreg+2*srcinc+64+L1pd, L1pt
+	vmulpd	zmm3, zmm3, zmm9		;; R3 = R3 * sine			; 18-21	 	17-19	16-18
+	vmulpd	zmm7, zmm7, zmm9		;; I3 = I3 * sine			; 18-21	 	17-19	16-18
+
+	L1prefetchw srcreg+3*srcinc+L1pd, L1pt
+	 vmulpd	zmm11, zmm11, zmm19		;; R2 = R2 * sine			; 19-22		18-20	17-19
+	 vmulpd	zmm15, zmm15, zmm19		;; I2 = I2 * sine			; 19-22	 	18-20	17-19
+
+	L1prefetchw srcreg+3*srcinc+64+L1pd, L1pt
+	 vmulpd	zmm13, zmm13, zmm19		;; R3 = R3 * sine			; 20-23	 	19-21	18-20
+	 vmulpd	zmm17, zmm17, zmm19		;; I3 = I3 * sine			; 20-23	 	19-21	18-20
+
+	zstore	[srcreg+0*srcinc+d1], zmm1	;; Save R2
+	zstore	[srcreg+0*srcinc+d1+64], zmm5	;; Save I2
+	zstore	[srcreg+0*srcinc+2*d1], zmm3	;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm7	;; Save I3
+	 zstore	[srcreg+1*srcinc+d1], zmm11	;; Save R2
+	 zstore	[srcreg+1*srcinc+d1+64], zmm15	;; Save I2
+	 zstore	[srcreg+1*srcinc+2*d1], zmm13	;; Save R3
+	 zstore	[srcreg+1*srcinc+2*d1+64], zmm17;; Save I3
+	bump	srcreg, 2*srcinc
+ELSE
+	vmovapd	zmm0, [srcreg+0*srcinc+d1]	;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+2*d1]	;; R3
+	vmovapd	zmm2, [srcreg+0*srcinc+d1+64]	;; I2
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]	;; I3					; Intel	Intel   Zen4	Zen5
+	vaddpd	zmm4, zmm0, zmm1		;; r2+ = R2 + R3			; 1-4	n 5	1-3	1-2
+	vaddpd	zmm5, zmm2, zmm3		;; i2+ = I2 + I3			; 1-4	n 5	1-3	1-2
+
+	vsubpd	zmm1, zmm0, zmm1		;; r2- = R2 - R3			; 2-5	n 9	2-4	2-3
+	vsubpd	zmm3, zmm2, zmm3		;; i2- = I2 - I3			; 2-5	n 9	2-4	2-3
+
+	vmovapd	zmm0, [srcreg+0*srcinc]		;; R1
+	vmovapd	zmm2, [srcreg+0*srcinc+64]	;; I1
+	zfnmaddpd zmm6, zmm4, zmm30, zmm0	;; r1- = R1 - .5r2+			; 5-8	n 9	4-7	3-6
+	zfnmaddpd zmm7, zmm5, zmm30, zmm2	;; i1- = I1 - .5i2+			; 5-8	n 9	4-7	3-6
+
+	vaddpd	zmm0, zmm0, zmm4		;; R1 = R1 + r2+			; 6-9		4-6	3-4
+	vaddpd	zmm2, zmm2, zmm5		;; I1 = I1 + i2+			; 6-9		4-6	3-4
+
+no bcast vmovapd zmm8, [screg+0*scinc+64]	;; cosine/sine
+bcast	vbroadcastsd zmm8, Q [bcreg+0*scinc+bcsz/2] ;; cosine/sine				n 13
+
+no bcast vmovapd zmm9, [screg+0*scinc]		;; sine						n 17
+bcast	vbroadcastsd zmm9, Q [bcreg+0*scinc]	;; sine
+	zfnmaddpd zmm4, zmm3, zmm31, zmm6	;; R2 = r1- - .866*i2-			; 9-12	n 13	8-11	7-10
+	zfmaddpd zmm5, zmm1, zmm31, zmm7	;; I2 = i1- + .866*r2-			; 9-12	n 13	8-11	7-10
+
+	zfmaddpd zmm6, zmm3, zmm31, zmm6	;; R3 = r1- + .866*i2-			; 10-13	n 14	9-12	8-11
+	zfnmaddpd zmm7, zmm1, zmm31, zmm7	;; I3 = i1- - .866*r2-			; 10-13	n 14	9-12	8-11
+	zstore	[srcreg+0*srcinc], zmm0		;; Save R1				; 10
+	bump	screg, scinc
+
+	L1prefetchw srcreg+1*srcinc+d1+L1pd, L1pt
+	L1prefetchw srcreg+1*srcinc+2*d1+L1pd, L1pt
+	zstore	[srcreg+0*srcinc+64], zmm2	;; Save I1				; 11
+
+	L1prefetchw srcreg+1*srcinc+d1+64+L1pd, L1pt
+	L1prefetchw srcreg+1*srcinc+2*d1+64+L1pd, L1pt
+	zfmsubpd zmm1, zmm4, zmm8, zmm5		;; R2 = R2 * cosine/sine - I2		; 13-16	n 17	12-15	11-14
+	zfmaddpd zmm5, zmm5, zmm8, zmm4		;; I2 = I2 * cosine/sine + R2		; 13-16	n 17	12-15	11-14
+
+	zfmaddpd zmm3, zmm6, zmm8, zmm7		;; R3 = R3 * cosine/sine + I3		; 14-17	n 18	13-16	12-15
+	zfmsubpd zmm7, zmm7, zmm8, zmm6		;; I3 = I3 * cosine/sine - R3		; 14-17	n 18	13-16	12-15
+
+	L1prefetchw srcreg+1*srcinc+L1pd, L1pt
+	vmulpd	zmm1, zmm1, zmm9		;; R2 = R2 * sine			; 17-20		16-18	15-17
+	vmulpd	zmm5, zmm5, zmm9		;; I2 = I2 * sine			; 17-20		16-18	15-17
+
+	L1prefetchw srcreg+1*srcinc+64+L1pd, L1pt
+	vmulpd	zmm3, zmm3, zmm9		;; R3 = R3 * sine			; 18-21	 	17-19	16-18
+	vmulpd	zmm7, zmm7, zmm9		;; I3 = I3 * sine			; 18-21	 	17-19	16-18
+
+	zstore	[srcreg+0*srcinc+d1], zmm1	;; Save R2
+	zstore	[srcreg+0*srcinc+d1+64], zmm5	;; Save I2
+	zstore	[srcreg+0*srcinc+2*d1], zmm3	;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm7	;; Save I3
+	bump	srcreg, srcinc
+ENDIF
+	ENDM
+
+;;
+;; ************************************* three-complex-djbunfft variants ******************************************
+;;
+
+;; The standard version
+zr3_three_complex_djbunfft_preload MACRO
+	zr3_3c_djbunfft_cmn_preload
+	ENDM
+zr3_three_complex_djbunfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbunfft_cmn srcreg,srcinc,d1,noexec,0,0,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+; Like the standard version except vbroadcastsd is used to reduce sin/cos data
+zr3b_three_complex_djbunfft_preload MACRO
+	zr3_3c_djbunfft_cmn_preload
+	ENDM
+zr3b_three_complex_djbunfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbunfft_cmn srcreg,srcinc,d1,exec,screg,16,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+; Like b3cl but extracts the sin/cos data to broadcasts from the six-real/three_complex sin/cos table
+; Beware: the six-real/three_complex sin/cos data is unusual in that two sine values are stored
+zr3rb_three_complex_djbunfft_preload MACRO
+	zr3_3c_djbunfft_cmn_preload
+	ENDM
+zr3rb_three_complex_djbunfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt,L1pt,L1pd
+	zr3_3c_djbunfft_cmn srcreg,srcinc,d1,exec,screg+8,128,screg,scinc,maxrpt,L1pt,L1pd
+	ENDM
+
+;; Do a 3-complex inverse FFT.  First we apply twiddle factors to 2 of the 3 input numbers.
+;; A 3-complex inverse FFT is:
+;; Res1:  (R1+R2+R3) + (I1+I2+I3)i
+;; Res2:  (R1-.5R2+.866I2-.5R3-.866I3) + (I1-.5I2-.866R2-.5I3+.866R3)i
+;; Res3:  (R1-.5R2-.866I2-.5R3+.866I3) + (I1-.5I2+.866R2-.5I3-.866R3)i
+
+zr3_3c_djbunfft_cmn_preload MACRO
+	vbroadcastsd zmm31, ZMM_P866
+	vbroadcastsd zmm30, ZMM_HALF
+	ENDM
+zr3_3c_djbunfft_cmn MACRO srcreg,srcinc,d1,bcast,bcreg,bcsz,screg,scinc,maxrpt,L1pt,L1pd
+IF maxrpt MOD 2 EQ 0
+	IF scinc EQ 0
+	code a version that loads sin/cos values once
+	ENDIF
+	vmovapd	zmm2, [srcreg+0*srcinc+d1]	;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+d1+64]	;; I2
+no bcast vmovapd zmm5, [screg+0*scinc+64]	;; cosine/sine
+bcast	vbroadcastsd zmm5, Q [bcreg+0*scinc+bcsz/2] ;; cosine/sine
+	zfmaddpd zmm0, zmm2, zmm5, zmm1		;; A2 = R2 * cosine/sine + I2		; 1-4		n 7
+	zfmsubpd zmm1, zmm1, zmm5, zmm2		;; B2 = I2 * cosine/sine - R2		; 1-4		n 8
+
+	vmovapd	zmm4, [srcreg+0*srcinc+2*d1]	;; R3
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]	;; I3
+	zfmsubpd zmm2, zmm4, zmm5, zmm3		;; A3 = R3 * cosine/sine - I3		; 2-5		n 7
+	zfmaddpd zmm3, zmm3, zmm5, zmm4		;; B3 = I3 * cosine/sine + R3		; 2-5		n 8
+
+	vmovapd	zmm12, [srcreg+1*srcinc+d1]	;; R2
+	vmovapd	zmm11, [srcreg+1*srcinc+d1+64]	;; I2
+no bcast vmovapd zmm15, [screg+1*scinc+64]	;; cosine/sine
+bcast	vbroadcastsd zmm15, Q [bcreg+1*scinc+bcsz/2] ;; cosine/sine
+	zfmaddpd zmm10, zmm12, zmm15, zmm11	;; A2 = R2 * cosine/sine + I2		; 3-6		n 9
+	zfmsubpd zmm11, zmm11, zmm15, zmm12	;; B2 = I2 * cosine/sine - R2		; 3-6		n 10
+
+	vmovapd	zmm14, [srcreg+1*srcinc+2*d1]	;; R3
+	vmovapd	zmm13, [srcreg+1*srcinc+2*d1+64];; I3
+	zfmsubpd zmm12, zmm14, zmm15, zmm13	;; A3 = R3 * cosine/sine - I3		; 4-7		n 9
+	zfmaddpd zmm13, zmm13, zmm15, zmm14	;; B3 = I3 * cosine/sine + R3		; 4-7		n 10
+
+no bcast vmovapd zmm4, [screg+0*scinc]		;; sine
+bcast	vbroadcastsd zmm4, Q [bcreg+0*scinc]	;; sine
+	vmulpd	zmm5, zmm30, zmm4		;; 500s = .5*sine			; 5-8		n 11
+	vmulpd	zmm6, zmm31, zmm4		;; 866s = .866*sine			; 5-8		n 15
+
+no bcast vmovapd zmm14, [screg+1*scinc]		;; sine
+bcast	vbroadcastsd zmm14, Q [bcreg+1*scinc]	;; sine
+	vmulpd	zmm15, zmm30, zmm14		;; 500s = .5*sine			; 6-9		n 13
+	vmulpd	zmm16, zmm31, zmm14		;; 866s = .866*sine			; 6-9		n 17
+	bump	screg, 2*scinc
+
+	vmovapd	zmm7, [srcreg+0*srcinc]		;; R1							n 11
+	vaddpd	zmm9, zmm0, zmm2		;; r2+ = R2 + R3			; 7-10		n 11
+	vsubpd	zmm0, zmm0, zmm2		;; r2- = R2 - R3			; 7-10		n 16
+
+	vmovapd	zmm8, [srcreg+0*srcinc+64]	;; I1							n 12
+	vaddpd	zmm2, zmm1, zmm3		;; i2+ = I2 + I3			; 8-11		n 12
+	vsubpd	zmm1, zmm1, zmm3		;; i2- = I2 - I3			; 8-11		n 15
+
+	vmovapd	zmm17, [srcreg+1*srcinc]	;; R1							n 13
+	vaddpd	zmm19, zmm10, zmm12		;; r2+ = R2 + R3			; 9-12		n 13
+	vsubpd	zmm10, zmm10, zmm12		;; r2- = R2 - R3			; 9-12		n 17
+
+	vmovapd	zmm18, [srcreg+1*srcinc+64]	;; I1							n 14
+	vaddpd	zmm12, zmm11, zmm13		;; i2+ = I2 + I3			; 10-13		n 14
+	vsubpd	zmm11, zmm11, zmm13		;; i2- = I2 - I3			; 10-13		n 16
+	zloop_unrolled_one
+
+	L1prefetchw srcreg+2*srcinc+d1+L1pd, L1pt
+	L1prefetchw srcreg+2*srcinc+d1+64+L1pd, L1pt
+	zfnmaddpd zmm3, zmm9, zmm5, zmm7	;; r1- = R1 - 500s*r2+			; 11-14		n 15
+	zfmaddpd zmm7, zmm9, zmm4, zmm7		;; R1 = R1 + sine*r2+			; 11-14
+
+	L1prefetchw srcreg+2*srcinc+2*d1+L1pd, L1pt
+	zfnmaddpd zmm9, zmm2, zmm5, zmm8	;; i1- = I1 - 500s*i2+			; 12-15		n 16
+	zfmaddpd zmm8, zmm2, zmm4, zmm8		;; I1 = I1 + sine*i2+			; 12-15
+
+	L1prefetchw srcreg+2*srcinc+2*d1+64+L1pd, L1pt
+	L1prefetchw srcreg+3*srcinc+d1+L1pd, L1pt
+	zfnmaddpd zmm13, zmm19, zmm15, zmm17	;; r1- = R1 - 500s*r2+			; 13-16		n 17
+	zfmaddpd zmm17, zmm19, zmm14, zmm17	;; R1 = R1 + sine*r2+			; 13-16
+
+	L1prefetchw srcreg+3*srcinc+d1+64+L1pd, L1pt
+	zfnmaddpd zmm19, zmm12, zmm15, zmm18	;; i1- = I1 - 500s*i2+			; 14-17		n 18
+	zfmaddpd zmm18, zmm12, zmm14, zmm18	;; I1 = I1 + sine*i2+			; 14-17
+
+	L1prefetchw srcreg+3*srcinc+2*d1+L1pd, L1pt
+	L1prefetchw srcreg+3*srcinc+2*d1+64+L1pd, L1pt
+	zfmaddpd zmm2, zmm1, zmm6, zmm3		;; R2 = r1- + 866s*i2-			; 15-18
+	zfnmaddpd zmm1, zmm1, zmm6, zmm3	;; R3 = r1- - 866s*i2-			; 15-18
+	zstore	[srcreg+0*srcinc], zmm7		;; Save R1				; 15
+
+	L1prefetchw srcreg+2*srcinc+L1pd, L1pt
+	zfnmaddpd zmm3, zmm0, zmm6, zmm9	;; I2 = i1- - 866s*r2-			; 16-19
+	zfmaddpd zmm0, zmm0, zmm6, zmm9		;; I3 = i1- + 866s*r2-			; 16-19
+	zstore	[srcreg+0*srcinc+64], zmm8	;; Save I1				; 16
+
+	L1prefetchw srcreg+2*srcinc+64+L1pd, L1pt
+	L1prefetchw srcreg+3*srcinc+L1pd, L1pt
+	zfmaddpd zmm12, zmm11, zmm16, zmm13	;; R2 = r1- + 866s*i2-			; 17-20
+	zfnmaddpd zmm11, zmm11, zmm16, zmm13	;; R3 = r1- - 866s*i2-			; 17-20
+	zstore	[srcreg+1*srcinc], zmm17	;; Save R1				; 17
+
+	L1prefetchw srcreg+3*srcinc+64+L1pd, L1pt
+	zfnmaddpd zmm13, zmm10, zmm16, zmm19	;; I2 = i1- - 866s*r2-			; 18-21
+	zfmaddpd zmm10, zmm10, zmm16, zmm19	;; I3 = i1- + 866s*r2-			; 18-21
+	zstore	[srcreg+1*srcinc+64], zmm18	;; Save I1				; 18
+
+	zstore	[srcreg+0*srcinc+d1], zmm2		;; Save R2
+	zstore	[srcreg+0*srcinc+d1+64], zmm3		;; Save I2
+	zstore	[srcreg+0*srcinc+2*d1], zmm1		;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm0		;; Save I3
+	zstore	[srcreg+1*srcinc+d1], zmm12		;; Save R2
+	zstore	[srcreg+1*srcinc+d1+64], zmm13		;; Save I2
+	zstore	[srcreg+1*srcinc+2*d1], zmm11		;; Save R3
+	zstore	[srcreg+1*srcinc+2*d1+64], zmm10	;; Save I3
+	bump	srcreg, 2*srcinc
+ELSE
+	vmovapd	zmm2, [srcreg+0*srcinc+d1]	;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+d1+64]	;; I2
+no bcast vmovapd zmm5, [screg+0*scinc+64]	;; cosine/sine
+bcast	vbroadcastsd zmm5, Q [bcreg+0*scinc+bcsz/2] ;; cosine/sine
+	zfmaddpd zmm0, zmm2, zmm5, zmm1		;; A2 = R2 * cosine/sine + I2		; 1-4		n 7
+	zfmsubpd zmm1, zmm1, zmm5, zmm2		;; B2 = I2 * cosine/sine - R2		; 1-4		n 8
+
+	vmovapd	zmm4, [srcreg+0*srcinc+2*d1]	;; R3
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]	;; I3
+	zfmsubpd zmm2, zmm4, zmm5, zmm3		;; A3 = R3 * cosine/sine - I3		; 2-5		n 7
+	zfmaddpd zmm3, zmm3, zmm5, zmm4		;; B3 = I3 * cosine/sine + R3		; 2-5		n 8
+
+no bcast vmovapd zmm4, [screg+0*scinc]		;; sine
+bcast	vbroadcastsd zmm4, Q [bcreg+0*scinc]	;; sine
+	vmulpd	zmm5, zmm30, zmm4		;; 500s = .5*sine			; 5-8		n 11
+	vmulpd	zmm6, zmm31, zmm4		;; 866s = .866*sine			; 5-8		n 15
+	bump	screg, scinc
+
+	vmovapd	zmm7, [srcreg+0*srcinc]		;; R1							n 11
+	vaddpd	zmm9, zmm0, zmm2		;; r2+ = R2 + R3			; 7-10		n 11
+	vsubpd	zmm0, zmm0, zmm2		;; r2- = R2 - R3			; 7-10		n 16
+
+	vmovapd	zmm8, [srcreg+0*srcinc+64]	;; I1							n 12
+	vaddpd	zmm2, zmm1, zmm3		;; i2+ = I2 + I3			; 8-11		n 12
+	vsubpd	zmm1, zmm1, zmm3		;; i2- = I2 - I3			; 8-11		n 15
+
+	L1prefetchw srcreg+1*srcinc+d1+L1pd, L1pt
+	L1prefetchw srcreg+1*srcinc+d1+64+L1pd, L1pt
+	zfnmaddpd zmm3, zmm9, zmm5, zmm7	;; r1- = R1 - 500s*r2+			; 11-14		n 15
+	zfmaddpd zmm7, zmm9, zmm4, zmm7		;; R1 = R1 + sine*r2+			; 11-14
+
+	L1prefetchw srcreg+1*srcinc+2*d1+L1pd, L1pt
+	zfnmaddpd zmm9, zmm2, zmm5, zmm8	;; i1- = I1 - 500s*i2+			; 12-15		n 16
+	zfmaddpd zmm8, zmm2, zmm4, zmm8		;; I1 = I1 + sine*i2+			; 12-15
+
+	L1prefetchw srcreg+1*srcinc+2*d1+64+L1pd, L1pt
+	L1prefetchw srcreg+1*srcinc+L1pd, L1pt
+	zfmaddpd zmm2, zmm1, zmm6, zmm3		;; R2 = r1- + 866s*i2-			; 15-18
+	zfnmaddpd zmm1, zmm1, zmm6, zmm3	;; R3 = r1- - 866s*i2-			; 15-18
+	zstore	[srcreg+0*srcinc], zmm7		;; Save R1				; 15
+
+	L1prefetchw srcreg+1*srcinc+64+L1pd, L1pt
+	zfnmaddpd zmm3, zmm0, zmm6, zmm9	;; I2 = i1- - 866s*r2-			; 16-19
+	zfmaddpd zmm0, zmm0, zmm6, zmm9		;; I3 = i1- + 866s*r2-			; 16-19
+	zstore	[srcreg+0*srcinc+64], zmm8	;; Save I1				; 16
+
+	zstore	[srcreg+0*srcinc+d1], zmm2		;; Save R2
+	zstore	[srcreg+0*srcinc+d1+64], zmm3		;; Save I2
+	zstore	[srcreg+0*srcinc+2*d1], zmm1		;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm0		;; Save I3
+	bump	srcreg, srcinc
+ENDIF
+	ENDM
+
+;;
+;; ************************************* six-reals-three-complex-fft variants ******************************************
+;;
+
+;; Macro to do one six_reals_fft and seven three_complex_djbfft.  The six-reals operation is done in the lower double of the ZMM register.  The three-complex
+;; is done in the high doubles of the ZMM register.   This is REALLY funky, as we do both at the same time within the full zmm register whenever possible.
+; The six-reals outputs:
+; R1a = R1+R4 + (R2+R5 + (R3+R6))
+; R1b = R1-R4 - (R2-R5 - (R3-R6))
+; R2 = R1-R4 + 0.5 * (R2-R5 - (R3-R6))
+; R3 = R1+R4 - 0.5 * (R2+R5 + (R3+R6))
+; I2 = 0.866 * (R2-R5 + (R3-R6))
+; I3 = 0.866 * (R2+R5 - (R3+R6))
+
+zr3_six_reals_three_complex_djbfft_preload MACRO
+	mov	r9d, 11111110b			;; We're pretty sure r9 is safe to use
+	kmovw	k7, r9d				;; Set k7 to 11111110b
+	knotw	k6, k7				;; Set k6 to 00000001b
+	vbroadcastsd zmm28, ZMM_HALF
+	vbroadcastsd zmm27, ZMM_P866
+	vbroadcastsd zmm26, ZMM_ONE
+	vzero	zmm0
+	vsubpd	zmm26 {k6}, zmm0, zmm26		;; 1 (7 times)			-1
+	vmulpd	zmm25, zmm26, zmm28		;; 0.5 (7 times)		-0.5
+	ENDM
+
+zr3_six_reals_three_complex_djbfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt
+IF maxrpt MOD 2 EQ 0
+	IF scinc EQ 0
+	code a version that loads sin/cos values once
+	ENDIF
+						;; Three complex comments	Six-reals comments
+	vmovapd	zmm1, [srcreg+0*srcinc+d1+64]	;; I2				R2-R5
+	vmovapd	zmm2, [srcreg+0*srcinc+2*d1+64]	;; I3				R3-R6
+	zfmaddpd zmm0, zmm2, zmm26, zmm1	;; i2+ = I2 + 1*I3		r2-- = R2-R5 + -1*(R3-R6)	; 1-4		n 5
+	zfnmaddpd zmm1, zmm2, zmm26, zmm1	;; i2- = I2 - 1*I3		r2-+ = R2-R5 - -1*(R3-R6)	; 1-4		n 5
+
+	vmovapd	zmm3, [srcreg+0*srcinc+d1]	;; R2				R2+R5
+	vmovapd	zmm4, [srcreg+0*srcinc+2*d1]	;; R3				R3+R6
+	vaddpd	zmm2, zmm3, zmm4		;; r2+ = R2 + R3		r2++ = R2+R5 + (R3+R6)		; 2-5		n 6
+	vsubpd	zmm3, zmm3, zmm4		;; r2- = R2 - R3		r2+- = R2+R5 - (R3+R6)		; 2-5		n 6
+
+	vmovapd	zmm9, [srcreg+1*srcinc+d1+64]	;; I2				R2-R5
+	vmovapd	zmm10, [srcreg+1*srcinc+2*d1+64]	;; I3				R3-R6
+	zfmaddpd zmm8, zmm10, zmm26, zmm9	;; i2+ = I2 + 1*I3		r2-- = R2-R5 + -1*(R3-R6)	; 3-4		n 8
+	zfnmaddpd zmm9, zmm10, zmm26, zmm9	;; i2- = I2 - 1*I3		r2-+ = R2-R5 - -1*(R3-R6)	; 3-4		n 8
+
+	vmovapd	zmm11, [srcreg+1*srcinc+d1]	;; R2				R2+R5
+	vmovapd	zmm12, [srcreg+1*srcinc+2*d1]	;; R3				R3+R6
+	vaddpd	zmm10, zmm11, zmm12		;; r2+ = R2 + R3		r2++ = R2+R5 + (R3+R6)		; 4-5		n 9
+	vsubpd	zmm11, zmm11, zmm12		;; r2- = R2 - R3		r2+- = R2+R5 - (R3+R6)		; 4-5		n 9
+	zloop_unrolled_one
+
+	vmovapd	zmm7, [srcreg+0*srcinc+64]	;; I1				R1-R4
+	zfnmaddpd zmm6, zmm0, zmm25, zmm7	;; i1- = I1 - .5i2+		R2 = R1-R4 - -0.5 * r2--	; 5-8		n 11
+	vmulpd	zmm1, zmm1, zmm27		;; i2- = .866*i2-		I2 = .866 * r2-+		; 5-8		n 11
+
+	vmovapd	zmm5, [srcreg+0*srcinc]		;; R1				R1+R4
+	zfnmaddpd zmm4, zmm2, zmm28, zmm5	;; r1- = R1 - .5r2+		R3 = R1+R4 - 0.5 * r2++		; 6-9		n 11
+	vmulpd	zmm3, zmm3, zmm27		;; r2- = .866*r2-		I3 = .866 * r2+-		; 6-9		n 11
+
+	zfmaddpd zmm0, zmm0, zmm26, zmm7	;; I1 = I1 + 1*i2+		R1b = R1-R4 + -1*r2--		; 7-10
+	vaddpd	zmm5, zmm5, zmm2		;; R1 = R1 + r2+		R1a = R1+R4 + r2++		; 7-10
+
+	vmovapd	zmm15, [srcreg+1*srcinc+64]	;; I1				R1-R4
+	zfnmaddpd zmm14, zmm8, zmm25, zmm15	;; i1- = I1 - .5i2+		R2 = R1-R4 - -0.5 * r2--	; 8-11		n 13
+	vmulpd	zmm9, zmm9, zmm27		;; i2- = .866*i2-		I2 = .866 * r2-+		; 8-11		n 13
+
+	vmovapd	zmm13, [srcreg+1*srcinc]	;; R1				R1+R4
+	zfnmaddpd zmm12, zmm10, zmm28, zmm13	;; r1- = R1 - .5r2+		R3 = R1+R4 - 0.5 * r2++		; 9-12		n 13
+	vmulpd	zmm11, zmm11, zmm27		;; r2- = .866*r2-		I3 = .866 * r2+-		; 9-12		n 13
+
+	zfmaddpd zmm8, zmm8, zmm26, zmm15	;; I1 = I1 + 1*i2+		R1b = R1-R4 + -1*r2--		; 10-13
+	vaddpd	zmm13, zmm13, zmm10		;; R1 = R1 + r2+		R1a = R1+R4 + r2++		; 10-13
+
+	zstore	[srcreg+0*srcinc], zmm5		;; Save R1							; 11
+	zstore	[srcreg+0*srcinc+64], zmm0	;; Save I1							; 11+1
+
+	vmovapd zmm2, zmm6			;; not important		R2
+	vsubpd	zmm2 {k7}, zmm4, zmm1		;; R2 = r1- - i2-		blend in R2			; 11-14		n 15
+	vmovapd zmm7, zmm1			;; not important		I2
+	vaddpd	zmm7 {k7}, zmm6, zmm3		;; I2 = i1- + r2-		blend in I2			; 11-14		n 15
+
+	vsubpd	zmm3 {k7}, zmm6, zmm3		;; I3 = i1- - r2-		blend in I3			; 12-15		n 16
+	vaddpd	zmm4 {k7}, zmm4, zmm1		;; R3 = r1- + i2-		blend in R3			; 12-15		n 16
+
+	vmovapd zmm10, zmm14			;; not important		R2
+	vsubpd	zmm10 {k7}, zmm12, zmm9		;; R2 = r1- - i2-		blend in R2			; 13-16		n 17
+	vmovapd zmm15, zmm9			;; not important		I2
+	vaddpd	zmm15 {k7}, zmm14, zmm11	;; I2 = i1- + r2-		blend in I2			; 13-16		n 17
+
+	vsubpd	zmm11 {k7}, zmm14, zmm11	;; I3 = i1- - r2-		blend in I3			; 14-17		n 18
+	vaddpd	zmm12 {k7}, zmm12, zmm9		;; R3 = r1- + i2-		blend in R3			; 14-17		n 18
+
+	zstore	[srcreg+1*srcinc], zmm13	;; Save R1							; 14
+	zstore	[srcreg+1*srcinc+64], zmm8	;; Save I1							; 14+1
+
+	vmovapd	zmm1, [screg+0*scinc+64]			;; cosine/sine
+	zfmsubpd zmm6, zmm2, zmm1, zmm7				;; A2 = R2 * cosine/sine - I2			; 15-18		n 19
+	zfmaddpd zmm7, zmm7, zmm1, zmm2				;; B2 = I2 * cosine/sine + R2			; 15-18		n 19
+
+	vmovapd	zmm1, [screg+0*scinc+128+64]			;; cosine/sine
+	zfmsubpd zmm2, zmm4, zmm1, zmm3				;; A3 = R3 * cosine/sine - I3			; 16-19		n 20
+	zfmaddpd zmm3, zmm3, zmm1, zmm4				;; B3 = I3 * cosine/sine + R3			; 16-19		n 20
+
+	vmovapd	zmm9, [screg+1*scinc+64]			;; cosine/sine
+	zfmsubpd zmm14, zmm10, zmm9, zmm15			;; A2 = R2 * cosine/sine - I2			; 17-20		n 21
+	zfmaddpd zmm15, zmm15, zmm9, zmm10			;; B2 = I2 * cosine/sine + R2			; 17-20		n 21
+
+	vmovapd	zmm9, [screg+1*scinc+128+64]			;; cosine/sine
+	zfmsubpd zmm10, zmm12, zmm9, zmm11			;; A3 = R3 * cosine/sine - I3			; 18-21		n 22
+	zfmaddpd zmm11, zmm11, zmm9, zmm12			;; B3 = I3 * cosine/sine + R3			; 18-21		n 22
+
+	vmovapd	zmm1, [screg+0*scinc]				;; sine
+	vmulpd	zmm6, zmm6, zmm1				;; A2 = A2 * sine (final R2)			; 19-22
+	vmulpd	zmm7, zmm7, zmm1				;; B2 = B2 * sine (final I2)			; 19-22
+
+	vmovapd	zmm1, [screg+0*scinc+128]			;; sine
+	vmulpd	zmm2, zmm2, zmm1				;; A3 = A3 * sine (final R3)			; 20-23
+	vmulpd	zmm3, zmm3, zmm1				;; B3 = B3 * sine (final I3)			; 20-23
+
+	vmovapd	zmm9, [screg+1*scinc]				;; sine
+	vmulpd	zmm14, zmm14, zmm9				;; A2 = A2 * sine (final R2)			; 21-24
+	vmulpd	zmm15, zmm15, zmm9				;; B2 = B2 * sine (final I2)			; 21-24
+
+	vmovapd	zmm9, [screg+1*scinc+128]			;; sine
+	vmulpd	zmm10, zmm10, zmm9				;; A3 = A3 * sine (final R3)			; 22-25
+	vmulpd	zmm11, zmm11, zmm9				;; B3 = B3 * sine (final I3)			; 22-25
+	bump	screg, 2*scinc
+
+	zstore	[srcreg+0*srcinc+d1], zmm6	;; Save R2
+	zstore	[srcreg+0*srcinc+d1+64], zmm7	;; Save I2
+	zstore	[srcreg+0*srcinc+2*d1], zmm2	;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm3	;; Save I3
+	zstore	[srcreg+1*srcinc+d1], zmm14	;; Save R2
+	zstore	[srcreg+1*srcinc+d1+64], zmm15	;; Save I2
+	zstore	[srcreg+1*srcinc+2*d1], zmm10	;; Save R3
+	zstore	[srcreg+1*srcinc+2*d1+64], zmm11 ;; Save I3
+	bump	srcreg, 2*srcinc
+ELSE
+						;; Three complex comments	Six-reals comments
+	vmovapd	zmm1, [srcreg+d1+64]		;; I2				R2-R5
+	vmovapd	zmm7, [srcreg+2*d1+64]		;; I3				R3-R6
+	zfmaddpd zmm0, zmm7, zmm26, zmm1	;; i2+ = I2 + 1*I3		r2-- = R2-R5 + -1*(R3-R6)	; 1-4		n 5
+	zfnmaddpd zmm1, zmm7, zmm26, zmm1	;; i2- = I2 - 1*I3		r2-+ = R2-R5 - -1*(R3-R6)	; 1-4		n 5
+
+	vmovapd	zmm3, [srcreg+d1]		;; R2				R2+R5
+	vmovapd	zmm7, [srcreg+2*d1]		;; R3				R3+R6
+	vaddpd	zmm2, zmm3, zmm7		;; r2+ = R2 + R3		r2++ = R2+R5 + (R3+R6)		; 2-5		n 6
+	vsubpd	zmm3, zmm3, zmm7		;; r2- = R2 - R3		r2+- = R2+R5 - (R3+R6)		; 2-5		n 6
+
+	vmulpd	zmm1, zmm1, zmm27		;; i2- = .866*i2-		I2 = .866 * r2-+		; 5-8		n 22
+	vmulpd	zmm3, zmm3, zmm27		;; r2- = .866*r2-		I3 = .866 * r2+-		; 6-9		n 22
+
+	vmovapd	zmm4, [srcreg+64]		;; I1				R1-R4
+	zfnmaddpd zmm6, zmm0, zmm25, zmm4	;; i1- = I1 - .5(I2+I3)		R1-R4 - -0.5 * r2-- (final R2)	; 5-8		n 22
+	zfmaddpd zmm0, zmm0, zmm26, zmm4	;; I1 + (I2+I3) (final I1)	R1-R4 + -1*r2-- (final R1b)	; 6-9		n 22
+
+	vmovapd	zmm5, [srcreg]			;; R1				R1+R4
+	zfnmaddpd zmm8, zmm2, zmm28, zmm5	;; r1- = R1 - .5(R2+R3)		R1+R4 - 0.5 * r2++ (final R3)	; 7-9		n 22
+	vaddpd	zmm5, zmm5, zmm2		;; R1 + (R2+R3) (final R1)	R1+R4 + r2++ (final R1a)	; 7-9		n 22
+
+	vmovapd zmm13, zmm1			;; not important		I2
+	vaddpd	zmm13 {k7}, zmm6, zmm3		;; I2 = i1- + r2-		blend in I2			; 9-12		n 22
+	vsubpd	zmm3 {k7}, zmm6, zmm3		;; I3 = i1- - r2-		blend in I3			; 9-12		n 22
+
+	vsubpd	zmm6 {k7}, zmm8, zmm1		;; R2 = r1- - i2-		blend in R2			; 10-13		n 22
+	vaddpd	zmm8 {k7}, zmm8, zmm1		;; R3 = r1- + i2-		blend in R3			; 10-13		n 22
+
+	vmovapd	zmm7, [screg+64]				;; cosine/sine
+	zfmsubpd zmm2, zmm6, zmm7, zmm13			;; A2 = R2 * cosine/sine - I2			; 18-21		n 22
+	zfmaddpd zmm13, zmm13, zmm7, zmm6			;; B2 = I2 * cosine/sine + R2			; 18-21		n 22
+
+	vmovapd	zmm7, [screg+128+64]				;; cosine/sine
+	zfmsubpd zmm6, zmm8, zmm7, zmm3				;; A3 = R3 * cosine/sine - I3			; 19-22		n 22
+	zfmaddpd zmm3, zmm3, zmm7, zmm8				;; B3 = I3 * cosine/sine + R3			; 19-22		n 22
+
+	vmovapd	zmm7, [screg]					;; sine
+	vmulpd	zmm2, zmm2, zmm7				;; A2 = A2 * sine (new R2)			; 22-25		n 22
+	vmulpd	zmm13, zmm13, zmm7				;; B2 = B2 * sine (new I2)			; 22-25		n 22
+
+	vmovapd	zmm7, [screg+128]				;; sine
+	vmulpd	zmm6, zmm6, zmm7				;; A3 = A3 * sine (new R3)			; 23-26		n 22
+	vmulpd	zmm3, zmm3, zmm7				;; B3 = B3 * sine (new I3)			; 23-26		n 22
+
+	zstore	[srcreg], zmm5			;; Save R1
+	zstore	[srcreg+64], zmm0		;; Save I1
+	zstore	[srcreg+d1], zmm2		;; Save R2
+	zstore	[srcreg+d1+64], zmm13		;; Save I2
+	zstore	[srcreg+2*d1], zmm6		;; Save R3
+	zstore	[srcreg+2*d1+64], zmm3		;; Save I3
+	bump	srcreg, srcinc
+	bump	screg, scinc
+ENDIF
+	ENDM
+
+;;
+;; ************************************* six-reals-three-complex-unfft variants ******************************************
+;;
+
+;; Macro to do one six_reals_unfft and seven three_complex_djbunfft.  The six-reals operation is done in the lower double of the ZMM register.  The three-complex
+;; is done in the high doubles of the ZMM register.   This is REALLY funky, as we do both at the same time within the full zmm register whenever possible.
+;; A traditional 6 real unfft result is:
+;; R1 = R1a+R1b + (R2+R3)
+;; R2 = R1a-R1b + .5*(R2-R3) + .866*(I2+I3)
+;; R3 = R1a+R1b - .5*(R2+R3) + .866*(I2-I3)
+;; R4 = R1a-R1b - (R2-R3)
+;; R5 = R1a+R1b - .5*(R2+R3) - .866*(I2-I3)
+;; R6 = R1a-R1b + .5*(R2-R3) - .866*(I2+I3)
+;; But we don't want to perform the full six real unfft, instead returning pairs that still need adding & subtracting:
+;; (R1 + R4) / 2 = R1a + R3				Store in R1
+;; (R2 + R5) / 2 = R1a - .5*R3 + .866*I3		Store in R2
+;; (R3 + R6) / 2 = R1a - .5*R3 - .866*I3		Store in R3
+;; (R1 - R4) / 2 = R1b + R2				Store in R4
+;; (R2 - R5) / 2 = -R1b + .5*R2 + .866*I2		Store in R5
+;; (R3 - R6) / 2 = R1b - .5*R2 + .866*I2		Store in R6
+
+zr3_six_reals_three_complex_djbunfft_preload MACRO
+	mov	r9d, 11111110b			;; We're pretty sure r9 is safe to use
+	kmovw	k7, r9d				;; Set k7 to 11111110b
+	knotw	k6, k7				;; Set k6 to 00000001b
+	vbroadcastsd zmm31, ZMM_HALF
+	vbroadcastsd zmm30, ZMM_P866
+	vzero	zmm29
+	ENDM
+
+zr3_six_reals_three_complex_djbunfft MACRO srcreg,srcinc,d1,screg,scinc,maxrpt
+IF maxrpt MOD 4 EQ 0
+	IF scinc EQ 0
+	code a version that loads sin/cos values once
+	ENDIF
+						;; Three complex comments	Six-reals comments
+	vmovapd	zmm2, [srcreg+0*srcinc+d1]			;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+d1+64]			;; I2
+	vmovapd	zmm3, [screg+0*scinc+64]			;; cosine2/sine2
+	zfmaddpd zmm0, zmm2, zmm3, zmm1				;; A2 = R2 * cosine2/sine2 + I2			; 1-4		n 9
+	zfmsubpd zmm1, zmm1, zmm3, zmm2				;; B2 = I2 * cosine2/sine2 - R2			; 1-4		n 9
+
+	vmovapd	zmm4, [srcreg+0*srcinc+2*d1]			;; R3
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]			;; I3
+	vmovapd	zmm5, [screg+0*scinc+128+64]			;; cosine3/sine3
+	zfmaddpd zmm2, zmm4, zmm5, zmm3				;; A3 = R3 * cosine3/sine3 + I3			; 2-5		n 10
+	zfmsubpd zmm3, zmm3, zmm5, zmm4				;; B3 = I3 * cosine3/sine3 - R3			; 2-5		n 10
+
+	vmovapd	zmm9, [srcreg+1*srcinc+d1]			;; R2
+	vmovapd	zmm8, [srcreg+1*srcinc+d1+64]			;; I2
+	vmovapd	zmm10, [screg+1*scinc+64]			;; cosine2/sine2
+	zfmaddpd zmm7, zmm9, zmm10, zmm8			;; A2 = R2 * cosine2/sine2 + I2			; 3-6		n 11
+	zfmsubpd zmm8, zmm8, zmm10, zmm9			;; B2 = I2 * cosine2/sine2 - R2			; 3-6		n 11
+
+	vmovapd	zmm11, [srcreg+1*srcinc+2*d1]			;; R3
+	vmovapd	zmm10, [srcreg+1*srcinc+2*d1+64]		;; I3
+	vmovapd	zmm12, [screg+1*scinc+128+64]			;; cosine3/sine3
+	zfmaddpd zmm9, zmm11, zmm12, zmm10			;; A3 = R3 * cosine3/sine3 + I3			; 4-7		n 12
+	zfmsubpd zmm10, zmm10, zmm12, zmm11			;; B3 = I3 * cosine3/sine3 - R3			; 4-7		n 12
+
+	vmovapd	zmm16, [srcreg+2*srcinc+d1]			;; R2
+	vmovapd	zmm15, [srcreg+2*srcinc+d1+64]			;; I2
+	vmovapd	zmm17, [screg+2*scinc+64]			;; cosine2/sine2
+	zfmaddpd zmm14, zmm16, zmm17, zmm15			;; A2 = R2 * cosine2/sine2 + I2			; 5-8		n 13
+	zfmsubpd zmm15, zmm15, zmm17, zmm16			;; B2 = I2 * cosine2/sine2 - R2			; 5-8		n 13
+
+	vmovapd	zmm18, [srcreg+2*srcinc+2*d1]			;; R3
+	vmovapd	zmm17, [srcreg+2*srcinc+2*d1+64]		;; I3
+	vmovapd	zmm19, [screg+2*scinc+128+64]			;; cosine3/sine3
+	zfmaddpd zmm16, zmm18, zmm19, zmm17			;; A3 = R3 * cosine3/sine3 + I3			; 6-9		n 14
+	zfmsubpd zmm17, zmm17, zmm19, zmm18			;; B3 = I3 * cosine3/sine3 - R3			; 6-9		n 14
+
+	vmovapd	zmm23, [srcreg+3*srcinc+d1]			;; R2
+	vmovapd	zmm22, [srcreg+3*srcinc+d1+64]			;; I2
+	vmovapd	zmm24, [screg+3*scinc+64]			;; cosine2/sine2
+	zfmaddpd zmm21, zmm23, zmm24, zmm22			;; A2 = R2 * cosine2/sine2 + I2			; 7-10		n 15
+	zfmsubpd zmm22, zmm22, zmm24, zmm23			;; B2 = I2 * cosine2/sine2 - R2			; 7-10		n 15
+
+	vmovapd	zmm25, [srcreg+3*srcinc+2*d1]			;; R3
+	vmovapd	zmm24, [srcreg+3*srcinc+2*d1+64]		;; I3
+	vmovapd	zmm26, [screg+3*scinc+128+64]			;; cosine3/sine3
+	zfmaddpd zmm23, zmm25, zmm26, zmm24			;; A3 = R3 * cosine3/sine3 + I3			; 8-11		n 16
+	zfmsubpd zmm24, zmm24, zmm26, zmm25			;; B3 = I3 * cosine3/sine3 - R3			; 8-11		n 16
+
+	vmovapd	zmm4, [screg+0*scinc]				;; sine2
+	vmulpd	zmm0, zmm0, zmm4				;; A2 = A2 * sine2 (R2)				; 9-12		n 17
+	vmulpd	zmm1, zmm1, zmm4				;; B2 = B2 * sine2 (I2)				; 9-12		n 17
+
+	vmovapd	zmm4, [screg+0*scinc+128]			;; sine3
+	vmulpd	zmm2, zmm2, zmm4				;; A3 = A3 * sine3 (R3)				; 10-13		n 17
+	vmulpd	zmm3, zmm3, zmm4				;; B3 = B3 * sine3 (I3)				; 10-13		n 18
+
+	vmovapd	zmm11, [screg+1*scinc]				;; sine2
+	vmulpd	zmm7, zmm7, zmm11				;; A2 = A2 * sine2 (R2)				; 11-14		n 19
+	vmulpd	zmm8, zmm8, zmm11				;; B2 = B2 * sine2 (I2)				; 11-14		n 19
+
+	vmovapd	zmm11, [screg+1*scinc+128]			;; sine3
+	vmulpd	zmm9, zmm9, zmm11				;; A3 = A3 * sine3 (R3)				; 12-15		n 19
+	vmulpd	zmm10, zmm10, zmm11				;; B3 = B3 * sine3 (I3)				; 12-15		n 20
+
+	vmovapd	zmm18, [screg+2*scinc]				;; sine2
+	vmulpd	zmm14, zmm14, zmm18				;; A2 = A2 * sine2 (R2)				; 13-16		n 21
+	vmulpd	zmm15, zmm15, zmm18				;; B2 = B2 * sine2 (I2)				; 13-16		n 21
+
+	vmovapd	zmm18, [screg+2*scinc+128]			;; sine3
+	vmulpd	zmm16, zmm16, zmm18				;; A3 = A3 * sine3 (R3)				; 14-17		n 21
+	vmulpd	zmm17, zmm17, zmm18				;; B3 = B3 * sine3 (I3)				; 14-17		n 22
+
+	vmovapd	zmm25, [screg+3*scinc]				;; sine2
+	vmulpd	zmm21, zmm21, zmm25				;; A2 = A2 * sine2 (R2)				; 15-18		n 23
+	vmulpd	zmm22, zmm22, zmm25				;; B2 = B2 * sine2 (I2)				; 15-18		n 23
+
+	vmovapd	zmm25, [screg+3*scinc+128]			;; sine3
+	vmulpd	zmm23, zmm23, zmm25				;; A3 = A3 * sine3 (R3)				; 16-19		n 23
+	vmulpd	zmm24, zmm24, zmm25				;; B3 = B3 * sine3 (I3)				; 16-19		n 24
+	zloop_unrolled_one
+	bump	screg, 4*scinc
+
+	vmovapd	zmm4, zmm1			;; not important		I2
+	vsubpd	zmm4 {k7}, zmm0, zmm2		;; r2- = R2 - R3		blend in I2			; 17-20		n 34
+	vaddpd	zmm2 {k7}, zmm0, zmm2		;; r2+ = R2 + R3		blend in R3			; 17-20		n 25
+
+	vaddpd	zmm0 {k7}, zmm1, zmm3		;; i2+ = I2 + I3		blend in R2			; 18-21		n 26
+	vsubpd	zmm3 {k7}, zmm1, zmm3		;; i2- = I2 - I3		blend in I3			; 18-21		n 33
+
+	vmovapd	zmm11, zmm8			;; not important		I2
+	vsubpd	zmm11 {k7}, zmm7, zmm9		;; r2- = R2 - R3		blend in I2			; 19-22		n 36
+	vaddpd	zmm9 {k7}, zmm7, zmm9		;; r2+ = R2 + R3		blend in R3			; 19-22		n 27
+
+	vaddpd	zmm7 {k7}, zmm8, zmm10		;; i2+ = I2 + I3		blend in R2			; 20-23		n 28
+	vsubpd	zmm10 {k7}, zmm8, zmm10		;; i2- = I2 - I3		blend in I3			; 20-23		n 35
+
+	vmovapd	zmm18, zmm15			;; not important		I2
+	vsubpd	zmm18 {k7}, zmm14, zmm16	;; r2- = R2 - R3		blend in I2			; 21-24		n 38
+	vaddpd	zmm16 {k7}, zmm14, zmm16	;; r2+ = R2 + R3		blend in R3			; 21-24		n 29
+
+	vaddpd	zmm14 {k7}, zmm15, zmm17	;; i2+ = I2 + I3		blend in R2			; 22-25		n 30
+	vsubpd	zmm17 {k7}, zmm15, zmm17	;; i2- = I2 - I3		blend in I3			; 22-25		n 37
+
+	vmovapd	zmm25, zmm22			;; not important		I2
+	vsubpd	zmm25 {k7}, zmm21, zmm23	;; r2- = R2 - R3		blend in I2			; 23-26		n 38
+	vaddpd	zmm23 {k7}, zmm21, zmm23	;; r2+ = R2 + R3		blend in R3			; 23-26		n 31
+
+	vaddpd	zmm21 {k7}, zmm22, zmm24	;; i2+ = I2 + I3		blend in R2			; 24-27		n 32
+	vsubpd	zmm24 {k7}, zmm22, zmm24	;; i2- = I2 - I3		blend in I3			; 24-27		n 39
+	zloop_unrolled_one
+
+	vmovapd	zmm1, [srcreg+0*srcinc]		;; R1				R1a
+	vaddpd	zmm5, zmm1, zmm2		;; R1 = R1 + r2+		R1 = R1a + R3			; 25-28
+	zfnmaddpd zmm2, zmm2, zmm31, zmm1	;; r1- = R1 - .5r2+		R1a- = R1a - .5*R3		; 25-28		n 33
+
+	vmovapd	zmm1, [srcreg+0*srcinc+64]	;; I1				R1b
+	vaddpd	zmm6, zmm1, zmm0		;; I1 = I1 + i2+		R4 = R1b + R2			; 26-29
+	zfnmaddpd zmm0, zmm0, zmm31, zmm1	;; i1- = I1 - .5i2+		R1b- = R1b - .5*R2		; 26-29		n 34
+
+	vmovapd	zmm8, [srcreg+1*srcinc]		;; R1				R1a
+	vaddpd	zmm12, zmm8, zmm9		;; R1 = R1 + r2+		R1 = R1a + R3			; 27-30
+	zfnmaddpd zmm9, zmm9, zmm31, zmm8	;; r1- = R1 - .5r2+		R1a- = R1a - .5*R3		; 27-30		n 35
+
+	vmovapd	zmm8, [srcreg+1*srcinc+64]	;; I1				R1b
+	vaddpd	zmm13, zmm8, zmm7		;; I1 = I1 + i2+		R4 = R1b + R2			; 28-31
+	zfnmaddpd zmm7, zmm7, zmm31, zmm8	;; i1- = I1 - .5i2+		R1b- = R1b - .5*R2		; 28-31		n 36
+
+	vmovapd	zmm15, [srcreg+2*srcinc]	;; R1				R1a
+	vaddpd	zmm19, zmm15, zmm16		;; R1 = R1 + r2+		R1 = R1a + R3			; 29-32
+	zfnmaddpd zmm16, zmm16, zmm31, zmm15	;; r1- = R1 - .5r2+		R1a- = R1a - .5*R3		; 29-32		n 37
+	zstore	[srcreg+0*srcinc], zmm5		;; Save R1							; 29
+
+	vmovapd	zmm15, [srcreg+2*srcinc+64]	;; I1				R1b
+	vaddpd	zmm20, zmm15, zmm14		;; I1 = I1 + i2+		R4 = R1b + R2			; 30-33
+	zfnmaddpd zmm14, zmm14, zmm31, zmm15	;; i1- = I1 - .5i2+		R1b- = R1b - .5*R2		; 30-33		n 38
+	zstore	[srcreg+0*srcinc+64], zmm6	;; Save I1							; 30
+
+	vmovapd	zmm22, [srcreg+3*srcinc]	;; R1				R1a
+	vaddpd	zmm26, zmm22, zmm23		;; R1 = R1 + r2+		R1 = R1a + R3			; 31-34
+	zfnmaddpd zmm23, zmm23, zmm31, zmm22	;; r1- = R1 - .5r2+		R1a- = R1a - .5*R3		; 31-34		n 39
+	zstore	[srcreg+1*srcinc], zmm12	;; Save R1							; 31
+
+	vmovapd	zmm22, [srcreg+3*srcinc+64]	;; I1				R1b
+	vaddpd	zmm27, zmm22, zmm21		;; I1 = I1 + i2+		R4 = R1b + R2			; 32-35
+	zfnmaddpd zmm21, zmm21, zmm31, zmm22	;; i1- = I1 - .5i2+		R1b- = R1b - .5*R2		; 32-35		n 38
+	zstore	[srcreg+1*srcinc+64], zmm13	;; Save I1							; 32
+	zloop_unrolled_one
+
+	zfmaddpd zmm1, zmm3, zmm30, zmm2	;; R2 = r1- + .866i2-		R2 = R1a- + .866*I3		; 33-36
+	zfnmaddpd zmm3, zmm3, zmm30, zmm2	;; R3 = r1- - .866i2-		R3 = R1a- - .866*I3		; 33-36
+	zstore	[srcreg+2*srcinc], zmm19	;; Save R1							; 33
+
+	zfnmaddpd zmm2, zmm4, zmm30, zmm0	;; I2 = i1- - .866r2-		negR5 = R1b- - .866*I2		; 34-37		n 41
+	zfmaddpd zmm4, zmm4, zmm30, zmm0	;; I3 = i1- + .866r2-		R6 = R1b- + .866*I2		; 34-37
+	zstore	[srcreg+2*srcinc+64], zmm20	;; Save I1							; 34
+
+	zfmaddpd zmm8, zmm10, zmm30, zmm9	;; R2 = r1- + .866i2-		R2 = R1a- + .866*I3		; 35-38
+	zfnmaddpd zmm10, zmm10, zmm30, zmm9	;; R3 = r1- - .866i2-		R3 = R1a- - .866*I3		; 35-38
+	zstore	[srcreg+3*srcinc], zmm26	;; Save R1							; 35
+
+	zfnmaddpd zmm9, zmm11, zmm30, zmm7	;; I2 = i1- - .866r2-		negR5 = R1b- - .866*I2		; 36-39		n 41
+	zfmaddpd zmm11, zmm11, zmm30, zmm7	;; I3 = i1- + .866r2-		R6 = R1b- + .866*I2		; 36-39
+	zstore	[srcreg+3*srcinc+64], zmm27	;; Save I1							; 36
+
+	zfmaddpd zmm15, zmm17, zmm30, zmm16	;; R2 = r1- + .866i2-		R2 = R1a- + .866*I3		; 37-40
+	zfnmaddpd zmm17, zmm17, zmm30, zmm16	;; R3 = r1- - .866i2-		R3 = R1a- - .866*I3		; 37-40
+	zstore	[srcreg+0*srcinc+d1], zmm1	;; Save R2							; 37
+
+	zfnmaddpd zmm16, zmm18, zmm30, zmm14	;; I2 = i1- - .866r2-		negR5 = R1b- - .866*I2		; 38-41		n 42
+	zfnmaddpd zmm27, zmm25, zmm30, zmm21	;; I2 = i1- - .866r2-		negR5 = R1b- - .866*I2		; 38-41		n 42
+	zstore	[srcreg+0*srcinc+2*d1], zmm3	;; Save R3							; 37+1
+
+	zfmaddpd zmm18, zmm18, zmm30, zmm14	;; I3 = i1- + .866r2-		R6 = R1b- + .866*I2		; 39-42
+	zfmaddpd zmm22, zmm24, zmm30, zmm23	;; R2 = r1- + .866i2-		R2 = R1a- + .866*I3		; 39-42
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm4	;; Save I3							; 38+1
+
+	zfnmaddpd zmm24, zmm24, zmm30, zmm23	;; R3 = r1- - .866i2-		R3 = R1a- - .866*I3		; 40-43
+	zfmaddpd zmm25, zmm25, zmm30, zmm21	;; I3 = i1- + .866r2-		R6 = R1b- + .866*I2		; 40-43
+	zstore	[srcreg+1*srcinc+d1], zmm8	;; Save R2							; 39+1
+
+	vsubpd	zmm2 {k6}, zmm29, zmm2		;; blend in I2			R5 = 0 - negR5			; 41-44
+	vsubpd	zmm9 {k6}, zmm29, zmm9		;; blend in I2			R5 = 0 - negR5			; 41-44
+	zstore	[srcreg+1*srcinc+2*d1], zmm10	;; Save R3							; 39+2
+
+	vsubpd	zmm16 {k6}, zmm29, zmm16	;; blend in I2			R5 = 0 - negR5			; 42-45
+	vsubpd	zmm27 {k6}, zmm29, zmm27	;; blend in I2			R5 = 0 - negR5			; 42-45
+
+	zstore	[srcreg+1*srcinc+2*d1+64], zmm11;; Save I3							; 40+2
+	zstore	[srcreg+2*srcinc+d1], zmm15	;; Save R2							; 41+2
+	zstore	[srcreg+2*srcinc+2*d1], zmm17	;; Save R3							; 41+3
+	zstore	[srcreg+2*srcinc+2*d1+64], zmm18;; Save I3							; 43+2
+	zstore	[srcreg+3*srcinc+d1], zmm22	;; Save R2							; 43+3
+	zstore	[srcreg+3*srcinc+2*d1], zmm24	;; Save R3							; 44+3
+	zstore	[srcreg+3*srcinc+2*d1+64], zmm25;; Save I3							; 44+4
+	zstore	[srcreg+0*srcinc+d1+64], zmm2	;; Save I2							; 45+4
+	zstore	[srcreg+1*srcinc+d1+64], zmm9	;; Save I2							; 45+5
+	zstore	[srcreg+2*srcinc+d1+64], zmm16	;; Save I2							; 46+5
+	zstore	[srcreg+3*srcinc+d1+64], zmm27	;; Save I2							; 46+6
+	bump	srcreg, 4*srcinc
+ELSE
+						;; Three complex comments	Six-reals comments
+	vmovapd	zmm2, [srcreg+0*srcinc+d1]			;; R2
+	vmovapd	zmm1, [srcreg+0*srcinc+d1+64]			;; I2
+	vmovapd	zmm3, [screg+64]				;; cosine2/sine2
+	zfmaddpd zmm0, zmm2, zmm3, zmm1				;; A2 = R2 * cosine2/sine2 + I2			; 1-4		n 
+	zfmsubpd zmm1, zmm1, zmm3, zmm2				;; B2 = I2 * cosine2/sine2 - R2			; 1-4		n 
+
+	vmovapd	zmm4, [srcreg+0*srcinc+2*d1]			;; R3
+	vmovapd	zmm3, [srcreg+0*srcinc+2*d1+64]			;; I3
+	vmovapd	zmm5, [screg+128+64]				;; cosine3/sine3
+	zfmaddpd zmm2, zmm4, zmm5, zmm3				;; A3 = R3 * cosine3/sine3 + I3			; 2-5		n 
+	zfmsubpd zmm3, zmm3, zmm5, zmm4				;; B3 = I3 * cosine3/sine3 - R3			; 2-5		n 
+
+	vmovapd	zmm4, [screg+0*scinc]				;; sine2
+	vmulpd	zmm0, zmm0, zmm4				;; A2 = A2 * sine2 (R2)				; 5-8		n 10
+	vmulpd	zmm1, zmm1, zmm4				;; B2 = B2 * sine2 (I2)				; 5-8		n 10
+
+	vmovapd	zmm4, [screg+0*scinc+128]			;; sine3
+	vmulpd	zmm2, zmm2, zmm4				;; A3 = A3 * sine3 (R3)				; 6-9		n 10
+	vmulpd	zmm3, zmm3, zmm4				;; B3 = B3 * sine3 (I3)				; 6-9		n 11
+	bump	screg, scinc
+
+	vmovapd	zmm4, zmm1			;; not important		I2
+	vsubpd	zmm4 {k7}, zmm0, zmm2		;; r2- = R2 - R3		blend in I2			; 10-13		n 
+	vaddpd	zmm2 {k7}, zmm0, zmm2		;; r2+ = R2 + R3		blend in R3			; 10-13		n 
+
+	vaddpd	zmm0 {k7}, zmm1, zmm3		;; i2+ = I2 + I3		blend in R2			; 11-14		n 
+	vsubpd	zmm3 {k7}, zmm1, zmm3		;; i2- = I2 - I3		blend in I3			; 11-14		n 
+
+	vmovapd	zmm1, [srcreg+0*srcinc]		;; R1				R1a
+	vaddpd	zmm5, zmm1, zmm2		;; R1 = R1 + r2+		R1 = R1a + R3			; 14-17
+	zfnmaddpd zmm2, zmm2, zmm31, zmm1	;; r1- = R1 - .5r2+		R1a- = R1a - .5*R3		; 14-17		n 
+
+	vmovapd	zmm1, [srcreg+0*srcinc+64]	;; I1				R1b
+	vaddpd	zmm6, zmm1, zmm0		;; I1 = I1 + i2+		R4 = R1b + R2			; 15-18
+	zfnmaddpd zmm0, zmm0, zmm31, zmm1	;; i1- = I1 - .5i2+		R1b- = R1b - .5*R2		; 15-18		n 
+
+	zstore	[srcreg+0*srcinc], zmm5		;; Save R1							; 18
+	zfmaddpd zmm1, zmm3, zmm30, zmm2	;; R2 = r1- + .866i2-		R2 = R1a- + .866*I3		; 18-21
+	zfnmaddpd zmm3, zmm3, zmm30, zmm2	;; R3 = r1- - .866i2-		R3 = R1a- - .866*I3		; 18-21
+
+	zstore	[srcreg+0*srcinc+64], zmm6	;; Save I1							; 19
+	zfnmaddpd zmm2, zmm4, zmm30, zmm0	;; I2 = i1- - .866r2-		negR5 = R1b- - .866*I2		; 19-22		n 
+	zfmaddpd zmm4, zmm4, zmm30, zmm0	;; I3 = i1- + .866r2-		R6 = R1b- + .866*I2		; 19-22
+
+	vsubpd	zmm2 {k6}, zmm29, zmm2		;; blend in I2			R5 = 0 - negR5			; 23-26
+
+	zstore	[srcreg+0*srcinc+d1], zmm1	;; Save R2
+	zstore	[srcreg+0*srcinc+2*d1], zmm3	;; Save R3
+	zstore	[srcreg+0*srcinc+2*d1+64], zmm4	;; Save I3
+	zstore	[srcreg+0*srcinc+d1+64], zmm2	;; Save I2
+	bump	srcreg, srcinc
+ENDIF
+	ENDM

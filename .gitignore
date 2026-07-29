@@ -1,0 +1,20 @@
+# Build products
+*.o
+/linux/mprime
+/linux64/mprime
+/macosx/mprime
+/macosx64/mprime
+
+# Stubs the makefile creates when the closed-source security module is absent
+# (linux64/makefile: the "security" target touches these if missing)
+/security.h
+/security.c
+/secure5.c
+
+# Runtime state, if anyone runs mprime from inside the tree
+/prime.txt
+/local.txt
+/worktodo.txt
+/results.txt
+/prime.log
+/prime.spl

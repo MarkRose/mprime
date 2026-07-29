@@ -1,0 +1,51 @@
+# Makefile for FreeBSD 32-bit mprime
+#
+# Install the curl package.  This is installed to $(LOCALBASE) by default.
+#
+# Hwloc can be downloaded from https://www.open-mpi.org/projects/hwloc/
+# Configure hwloc with --enable-static --disable-shared --disable-pci --disable-cuda --disable-gl --disable-opencl --disable-rsmi
+#
+
+CC ?= cc
+CFLAGS += -I.. -I../gwnum -I$(LOCALBASE)/include -O2 -march=i486 -DPORT=6
+
+CXX ?= cc
+CXXFLAGS += -I.. -I../gwnum -I$(LOCALBASE)/include -I../../boost_1_76_0 -O2 -march=i486 -std=c++11 -DPORT=6
+
+LDFLAGS += -fpie -L$(LOCALBASE)/lib -Wl,-M
+LIBS += ../gwnum/gwnum.a -lm -lpthread -lhwloc -lcurl -lstdc++ -lcompat -lgmp
+
+FACTOROBJ = factor32.o
+OBJS = prime.o menu.o cJSON.o ecm.o pair.o pm1prob.o
+EXE      = mprime
+
+#########################################################################
+
+$(EXE): security $(OBJS) $(FACTOROBJ)
+	$(CC) $(LDFLAGS) -o $(EXE) $(OBJS) $(FACTOROBJ) $(LIBS)
+
+security:
+	[ ! -e ../security.h ] && touch ../security.h || true
+	[ ! -e ../security.c ] && touch ../security.c || true
+	[ ! -e ../secure5.c ] && touch ../secure5.c || true
+
+clean:
+	rm -f $(EXE) $(EXE2) $(OBJS)
+
+cJSON.o:
+	$(CC) $(CFLAGS) -c ../cJSON.c
+
+ecm.o:
+	$(CXX) $(CXXFLAGS) -c ../ecm.cpp
+
+pair.o:
+	$(CXX) $(CXXFLAGS) -c ../pair.cpp
+
+pm1prob.o:
+	$(CC) $(CFLAGS) -c ../pm1prob.c
+
+.c.o:
+	$(CC) $(CFLAGS) -c $<
+
+.cpp.o:
+	$(CXX) $(CXXFLAGS) -c $<
