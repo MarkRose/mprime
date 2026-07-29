@@ -89,6 +89,7 @@ gwmutex	WORKTODO_MUTEX;			/* Lock for accessing worktodo structure */
 
 gwevent AUTOBENCH_EVENT;		/* Event to wake up workers after an auto-benchmark */
 gwevent PROOF_UPLOAD_EVENT;		/* Event to wake up proof uploader */
+gwevent P1_UPLOAD_EVENT;		/* Event to wake up P-1 residue uploader */
 
 int	LAUNCH_TYPE = 0;		/* Type of workers launched */
 unsigned int WORKERS_ACTIVE = 0;	/* Number of workers running */
@@ -174,6 +175,9 @@ const char KEY_ProofHashLength[] = "ProofHashLength";
 const char KEY_ProofPower[] = "ProofPower";
 const char KEY_ProofPowerMult[] = "ProofPowerMult";
 const char KEY_UploadChunkSize[] = "UploadChunkSize";
+const char KEY_P1Uploads[] = "P1Uploads";
+const char KEY_AcceptsP1Uploads[] = "AcceptsP1Uploads";
+const char KEY_P1UploadIP[] = "P1UploadIP";
 
 const char SEC_Windows[] = "Windows";
 const char KEY_MergeWindows[] = "MergeWindows";
@@ -1581,6 +1585,12 @@ void nameAndReadIniFiles (
 
 	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_ProofUploads, 1))
 		gwthread_create (&UPLOAD_THREAD, &proofUploader, NULL);
+
+/* Start the P-1 stage 1 residue uploading thread.  It idles unless a ppp proxy */
+/* has told us it accepts residues, so this costs nothing when talking to PrimeNet. */
+
+	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1))
+		gwthread_create (&P1_UPLOAD_THREAD, &p1Uploader, NULL);
 }
 
 /* Init the communications code.  We used to do this at the end of */
@@ -5080,6 +5090,7 @@ int writeResultsJSON (
 
 gwthread COMMUNICATION_THREAD = 0;	/* Handle for comm thread */
 gwthread UPLOAD_THREAD = 0;		/* Handle for proof file upload thread */
+gwthread P1_UPLOAD_THREAD = 0;		/* Handle for P-1 stage 1 residue upload thread */
 gwmutex	SPOOL_FILE_MUTEX;		/* Lock governing spool file access */
 int	GET_PING_INFO = 0;		/* Flag to get ping info */
 int	GLOBAL_SEND_MSG_COUNT = 0;	/* Used to detect hung comm threads */
@@ -6218,10 +6229,20 @@ retry:
 		/* Again store a hash value so the user won't hand edit the value */
 		server_computer_name = IniSectionGetInt (INI_FILE, SEC_Internals, KEY_SrvrComputerName, 0);
 		if (string_to_hash (COMPID) != server_computer_name) strcpy (pkt.computer_name, COMPID);
+		/* Tell a ppp proxy what we can do with P-1 stage 1 save files.  Uploading is */
+		/* gated on the same switch that starts the upload thread; downloading needs */
+		/* no extra machinery, so it is offered whenever the feature is compiled in. */
+		pkt.p1_upload_capable = IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1) ? 1 : 0;
+		pkt.p1_download_capable = 1;
 		LOCKED_WORK_UNIT = NULL;
 		rc = sendMessage (PRIMENET_UPDATE_COMPUTER_INFO, &pkt);
 		if (rc) goto error_exit;
 		talked_to_server = TRUE;
+		/* Remember whether this server takes P-1 save files.  Always rewrite it, */
+		/* including when the key is absent: if the proxy is removed we must stop */
+		/* sending residues rather than keep posting them to PrimeNet. */
+		IniSectionWriteInt (INI_FILE, SEC_PrimeNet, KEY_AcceptsP1Uploads, pkt.accepts_p1_uploads ? 1 : 0);
+		if (pkt.accepts_p1_uploads) gwevent_signal (&P1_UPLOAD_EVENT);
 		strcpy (USERID, pkt.user_id);
 		IniWriteString (INI_FILE, "V5UserID", USERID);
 		IniSectionWriteInt (INI_FILE, SEC_Internals, KEY_SrvrUID, string_to_hash (USERID));
@@ -6792,6 +6813,16 @@ retry:
 			}
 			strcpy (w.known_factors, pkt1.known_factors);
 		}
+
+/* A ppp proxy can point us at a P-1 stage 1 residue that another machine has */
+/* already computed, letting us go straight to stage 2 instead of repeating that */
+/* work.  Fetch it before queueing the work unit so it is on disk by the time a */
+/* worker picks the assignment up.  Failure is deliberately not fatal: without the */
+/* residue we just compute stage 1 ourselves, which is what we would have done */
+/* anyway.  PrimeNet never sends this field. */
+
+		if (pkt1.work_type == PRIMENET_WORK_TYPE_PMINUS1 && pkt1.p1_download_url[0])
+			P1Download (tnum, &w, pkt1.p1_download_url);
 
 /* Write the exponent to our worktodo file, before acknowledging the assignment with a projected completion date. */
 

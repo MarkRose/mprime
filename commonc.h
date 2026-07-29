@@ -234,9 +234,11 @@ extern int GIMPS_QUIT;			/* TRUE if we just successfully quit the GIMPS project 
 
 extern gwthread COMMUNICATION_THREAD;	/* Handle for comm thread.  Set when comm thread is active. */
 extern gwthread UPLOAD_THREAD;		/* Handle for proof file upload thread */
+extern gwthread P1_UPLOAD_THREAD;	/* Handle for P-1 stage 1 residue upload thread */
 
 extern gwevent AUTOBENCH_EVENT;		/* Event to wake up workers after an auto-benchmark */
 extern gwevent PROOF_UPLOAD_EVENT;	/* Event to wake up proof uploader */
+extern gwevent P1_UPLOAD_EVENT;		/* Event to wake up P-1 residue uploader */
 
 /* Topology variables and routines */
 
@@ -321,6 +323,9 @@ extern const char KEY_ProofHashLength[];
 extern const char KEY_ProofPower[];
 extern const char KEY_ProofPowerMult[];
 extern const char KEY_UploadChunkSize[];
+extern const char KEY_P1Uploads[];
+extern const char KEY_AcceptsP1Uploads[];
+extern const char KEY_P1UploadIP[];
 
 extern const char SEC_Windows[];
 extern const char KEY_MergeWindows[];
@@ -553,6 +558,7 @@ void spoolExistingResultsFile (void);
 int unreserve (unsigned long);
 void salvageCorruptSpoolFile (void);
 void proofUploader (void *);
+void p1Uploader (void *);
 
 int LoadPrimeNet (void);
 void UnloadPrimeNet (void);
@@ -560,6 +566,12 @@ int PRIMENET (short, void *);
 int ProofFileNames (char filenames[50][512]);
 void ProofUpload (char *);
 int ProofGetData (char *, void *, int, char *);
+
+/* P-1 stage 1 residue transfer to and from a ppp proxy.  See p1_transfer.c. */
+int P1FileNames (char filenames[50][512]);
+void P1Upload (char *);
+int P1Download (int, struct work_unit *, const char *);
+void stageP1SaveFileForUpload (int, struct work_unit *);
 char getDirectorySeparator ();
 void mallocFreeForOS ();
 

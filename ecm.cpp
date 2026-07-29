@@ -13792,6 +13792,21 @@ msg_and_exit:
 	if (!QA_IN_PROGRESS && w->work_type == WORK_PMINUS1 && IniGetInt (INI_FILE, "KeepPminus1SaveFiles", 1))
 		pm1_save (&pm1data);
 
+/* If we finished stage 1 but could not run stage 2, hand the stage 1 residue to a */
+/* ppp proxy so a machine with more memory can finish the job.  Without this the */
+/* work is simply thrown away and re-done from scratch by whoever gets the exponent */
+/* next.  Server-assigned P-1 arrives as WORK_PFACTOR, which is why the retention */
+/* above -- limited to WORK_PMINUS1 -- never covers this case. */
+/* Staging happens only when a proxy has told us it accepts residues, so a client */
+/* talking straight to PrimeNet behaves exactly as before. */
+
+	if (!QA_IN_PROGRESS && w->work_type == WORK_PFACTOR && pm1data.C <= pm1data.B &&
+	    IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1) &&
+	    IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_AcceptsP1Uploads, 0)) {
+		pm1_save (&pm1data);
+		stageP1SaveFileForUpload (thread_num, w);
+	}
+
 /* Return stop code indicating success or work unit complete */ 
 
 done:	if (w->work_type == WORK_PMINUS1 || w->work_type == WORK_PFACTOR)

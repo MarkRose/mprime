@@ -495,6 +495,31 @@ int ProofFileNames (char filenames[50][512])	// Returns number of matching filen
 	return (num_files);
 }
 
+/* Get list of staged P-1 stage 1 residues from the current working directory.
+| These are named p1send.<exponent> -- see p1_transfer.c for why that rather than
+| the mNNNNNNN save file name. */
+
+int P1FileNames (char filenames[50][512])	// Returns number of matching filenames
+{
+	int	num_files;
+	DIR	*dir;				/* pointer to the scanned directory */
+	struct dirent *entry;			/* pointer to one directory entry */
+
+	dir = opendir (".");
+	if (!dir) return (-1);
+
+	num_files = 0;
+	while ((entry = readdir(dir)) != NULL) {
+		if (strncmp (entry->d_name, "p1send.", 7) == 0 && entry->d_name[7] != 0) {
+			if (num_files < 50) strcpy (filenames[num_files++], entry->d_name);
+		}
+	}
+
+	closedir (dir);
+
+	return (num_files);
+}
+
 /* Get the character that separates directories in a pathname */
 
 char getDirectorySeparator ()

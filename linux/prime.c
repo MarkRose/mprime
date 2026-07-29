@@ -115,6 +115,7 @@ char pidfile[256];
 #include "primenet.c"
 #include "proof_upload.c"
 #include "proof_getdata.c"
+#include "p1_transfer.c"
 #include "gwtest.c"
 
 /* Signal handlers */

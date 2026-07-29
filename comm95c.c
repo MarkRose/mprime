@@ -473,6 +473,27 @@ int ProofFileNames (char filenames[50][512])	// Returns number of matching filen
 	return (num_files);
 }
 
+/* Get list of staged P-1 stage 1 residues from the current working directory.
+| These are named p1send.<exponent> -- see p1_transfer.c for why that rather than
+| the mNNNNNNN save file name. */
+
+int P1FileNames (char filenames[50][512])	// Returns number of matching filenames
+{
+	HANDLE hFind;
+	WIN32_FIND_DATA FindFileData;
+	int	num_files;
+
+	num_files = 0;
+	if ((hFind = FindFirstFile ("p1send.*", &FindFileData)) != INVALID_HANDLE_VALUE) do {
+		// Double-check the pattern matching (to match Linux code)
+		if (strncmp (FindFileData.cFileName, "p1send.", 7) == 0 && FindFileData.cFileName[7] != 0) {
+			if (num_files < 50) strcpy (filenames[num_files++], FindFileData.cFileName);
+		}
+	} while (FindNextFile (hFind, &FindFileData));
+	FindClose (hFind);
+	return (num_files);
+}
+
 /* Get the character that separates directories in a pathname */
 
 char getDirectorySeparator ()
