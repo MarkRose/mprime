@@ -7,7 +7,7 @@
 | stage 1 residue away, so whoever gets that exponent next redoes stage 1 from
 | scratch.
 |
-| These routines hand that residue to a "ppp" proxy instead, which passes it to
+| These routines hand that residue to primenet-p1-proxy instead, which passes it
 | a machine with enough memory to finish the job.  Both directions are modelled
 | on the PRP proof endpoints:
 |

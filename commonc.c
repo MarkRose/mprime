@@ -1586,7 +1586,7 @@ void nameAndReadIniFiles (
 	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_ProofUploads, 1))
 		gwthread_create (&UPLOAD_THREAD, &proofUploader, NULL);
 
-/* Start the P-1 stage 1 residue uploading thread.  It idles unless a ppp proxy */
+/* Start the P-1 stage 1 residue uploading thread.  It idles unless */
 /* has told us it accepts residues, so this costs nothing when talking to PrimeNet. */
 
 	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1))
@@ -6229,7 +6229,7 @@ retry:
 		/* Again store a hash value so the user won't hand edit the value */
 		server_computer_name = IniSectionGetInt (INI_FILE, SEC_Internals, KEY_SrvrComputerName, 0);
 		if (string_to_hash (COMPID) != server_computer_name) strcpy (pkt.computer_name, COMPID);
-		/* Tell a ppp proxy what we can do with P-1 stage 1 save files.  Uploading is */
+		/* Tell primenet-p1-proxy what we can do with P-1 stage 1 save files. Uploading */
 		/* gated on the same switch that starts the upload thread; downloading needs */
 		/* no extra machinery, so it is offered whenever the feature is compiled in. */
 		pkt.p1_upload_capable = IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1) ? 1 : 0;
@@ -6814,7 +6814,7 @@ retry:
 			strcpy (w.known_factors, pkt1.known_factors);
 		}
 
-/* A ppp proxy can point us at a P-1 stage 1 residue that another machine has */
+/* primenet-p1-proxy can point us at a P-1 stage 1 residue another machine has */
 /* already computed, letting us go straight to stage 2 instead of repeating that */
 /* work.  Fetch it before queueing the work unit so it is on disk by the time a */
 /* worker picks the assignment up.  Failure is deliberately not fatal: without the */

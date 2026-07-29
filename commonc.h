@@ -567,7 +567,7 @@ int ProofFileNames (char filenames[50][512]);
 void ProofUpload (char *);
 int ProofGetData (char *, void *, int, char *);
 
-/* P-1 stage 1 residue transfer to and from a ppp proxy.  See p1_transfer.c. */
+/* P-1 stage 1 residue transfer to and from primenet-p1-proxy.  See p1_transfer.c. */
 int P1FileNames (char filenames[50][512]);
 void P1Upload (char *);
 int P1Download (int, struct work_unit *, const char *);

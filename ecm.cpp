@@ -13793,7 +13793,7 @@ msg_and_exit:
 		pm1_save (&pm1data);
 
 /* If we finished stage 1 but could not run stage 2, hand the stage 1 residue to a */
-/* ppp proxy so a machine with more memory can finish the job.  Without this the */
+/* primenet-p1-proxy so a machine with more memory can finish the job.  Without */
 /* work is simply thrown away and re-done from scratch by whoever gets the exponent */
 /* next.  Server-assigned P-1 arrives as WORK_PFACTOR, which is why the retention */
 /* above -- limited to WORK_PMINUS1 -- never covers this case. */

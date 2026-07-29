@@ -446,7 +446,7 @@ int format_args (char* args, short operation, void* pkt)
 			strcpy (p, "&cn=");
 			p = armor (p + strlen (p), z->computer_name);
 		}
-/* Tell a ppp proxy what we can do with P-1 stage 1 save files.  PrimeNet itself */
+/* Tell primenet-p1-proxy what we can do with P-1 stage 1 save files.  PrimeNet */
 /* ignores unrecognized parameters, so these are harmless when talking to it directly. */
 		if (z->p1_upload_capable) {
 			strcpy (p, "&p1up=1");
@@ -1096,7 +1096,7 @@ int primenet_parse_page (char *response_buf, short operation, void *pkt)
 		primenet_parse_string (s, "cn", z->computer_name, sizeof (z->computer_name));
 		primenet_parse_uint (s, "od", &z->options_counter);
 
-/* A ppp proxy adds this to say it will take our P-1 stage 1 save files.  A real */
+/* primenet-p1-proxy adds this to say it will take our P-1 stage 1 save files.  A */
 /* PrimeNet response never contains it, which is exactly how we notice the proxy */
 /* is gone and stop trying to upload.  Default to zero before parsing so an */
 /* absent key clears the flag rather than leaving a stale one set. */
@@ -1159,7 +1159,7 @@ int primenet_parse_page (char *response_buf, short operation, void *pkt)
 		primenet_parse_string (s, "kf", z->known_factors, sizeof (z->known_factors));
 		primenet_parse_uint (s, "ns", &z->num_squarings);
 		primenet_parse_uint (s, "nr", &z->nth_run);
-/* A ppp proxy sends this with a P-1 assignment to point at a stage 1 save file */
+/* primenet-p1-proxy sends this with a P-1 assignment to point at a stage 1 save */
 /* someone else already computed.  PrimeNet never sends it. */
 		z->p1_download_url[0] = 0;
 		primenet_parse_string (s, "URL", z->p1_download_url, sizeof (z->p1_download_url));

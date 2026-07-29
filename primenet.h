@@ -77,7 +77,7 @@ struct primenetUpdateComputerInfo {
 	char	user_name[33];
 	char	pad[1];			/* For 4-byte alignment */
 	uint32_t accepts_p1_uploads;	/* TRUE if the server takes P-1 stage 1 save files. */
-					/* Only a ppp proxy sets this; PrimeNet never does. */
+					/* Only primenet-p1-proxy sets this; PrimeNet never does. */
 	uint32_t options_counter;	/* Number of times options have been */
 					/* updated on the server. Whenever */
 					/* this increases client must get */
@@ -190,7 +190,7 @@ struct primenetGetAssignment {
 	uint32_t nth_run;		/* P+1 nth run:  1=2/7, 2=6/5, 3=random */
 	char	known_factors[2000];	/* List of known factors */
 	char	p1_download_url[512];	/* URL of a P-1 stage 1 save file to resume from. */
-					/* Only a ppp proxy sends this; PrimeNet never does. */
+					/* Only primenet-p1-proxy sends this; PrimeNet never does. */
 };
 
 
