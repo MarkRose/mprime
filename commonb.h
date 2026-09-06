@@ -172,6 +172,14 @@ void setWriteSaveFileSpecial (writeSaveFileState *state);
 void deleteWriteSaveFile (writeSaveFileState *state, int fd);
 void unlinkSaveFiles (writeSaveFileState *state);
 
+/* Error counting and Jacobi error checking.  The Jacobi symbol of an error-free intermediate value is known in advance, */
+/* so comparing against it has a 50% chance of catching a hardware error since the last check. */
+
+void inc_error_count (int type, unsigned long *error_count);
+int testJacobiFlag (int thread_num);
+int jacobi_testing_available (void);
+int jacobi_test_mpz (int thread_num, mpz_t a, mpz_t b, int expected, const char *what, double *elapsed);
+
 /* Stop routines */
 
 /* Reasons returned for why we stopped processing a work unit */

@@ -6533,6 +6533,66 @@ int gwrotate_left (			// Returns TRUE if successful
 	return (gwrotate_right (gwdata, x, gwdata->n - shift_count));
 }
 
+/* Return TRUE if the installed GMP library can run Jacobi error checks at a reasonable speed. */
+/* Fast (sub-quadratic) Jacobi symbol code was introduced in GMP version 5.1.0. */
+
+int jacobi_testing_available (void)
+{
+	int	major_ver, minor_ver;
+	sscanf (gmp_version, "%d.%d", &major_ver, &minor_ver);
+	return (major_ver > 5 || (major_ver == 5 && minor_ver >= 1));
+}
+
+/* Compute the Jacobi symbol (a|b) and compare it against the value it must have if the computation was error-free. */
+/* This is the shared core of every Jacobi error check.  Returns TRUE if the check passed. */
+/* Callers that could not produce a valid "a" must not call this routine. */
+
+int jacobi_test_mpz (
+	int	thread_num,		/* Window to display messages in */
+	mpz_t	a,			/* Value being checked */
+	mpz_t	b,			/* Modulus */
+	int	expected,		/* Jacobi symbol an error-free "a" must have */
+	const char *what,		/* Description of the value being checked, NULL for the historical LL wording */
+	double	*elapsed)		/* Returned time the check took, in seconds.  May be NULL. */
+{
+	int	Jacobi_symbol, silent_Jacobi, passed;
+	double	timers[1];
+	char	buf[120];
+
+/* Clear and start a timer */
+
+	clear_timers (timers, sizeof (timers) / sizeof (timers[0]));
+	start_timer (timers, 0);
+
+/* Announce the check, then compute the Jacobi symbol */
+
+	silent_Jacobi = IniGetInt (INI_FILE, "SilentJacobi", 0);
+	if (!silent_Jacobi) {
+		if (what == NULL) strcpy (buf, "Running Jacobi error check.\n");
+		else sprintf (buf, "Running %s Jacobi error check.\n", what);
+		OutputStr (thread_num, buf);
+	}
+	Jacobi_symbol = mpz_jacobi (a, b);
+	passed = (Jacobi_symbol == expected);
+
+/* End the timer, print out PASS/FAIL message along with time taken */
+
+	end_timer (timers, 0);
+	if (elapsed != NULL) *elapsed = timer_value (timers, 0);
+	if (what == NULL)
+		sprintf (buf, "Jacobi error check %s.  Time: %6.3f sec.\n", passed ? "passed" : "failed", timer_value (timers, 0));
+	else
+		sprintf (buf, "%s Jacobi error check %s.  Time: %6.3f sec.\n", what, passed ? "passed" : "failed", timer_value (timers, 0));
+	if (!silent_Jacobi) OutputStr (thread_num, buf);
+	else if (!passed) {
+		if (what == NULL) strcpy (buf, "Jacobi error-check failed\n");
+		else sprintf (buf, "%s Jacobi error-check failed\n", what);
+		OutputStr (thread_num, buf);
+	}
+
+	return (passed);
+}
+
 /* Perform a Jacobi test on the current LL iteration.  This check has a 50% chance of catching */
 /* a calculation error.  See http://www.mersenneforum.org/showthread.php?t=22471 especially */
 /* starting at post #30. */
@@ -6544,14 +6604,7 @@ int jacobi_test (
 {
 	giant	v;
 	mpz_t	a, b;
-	int	err_code, Jacobi_symbol, silent_Jacobi;
-	double	timers[1];
-	char	buf[80];
-
-/* Clear and start a timer */
-
-	clear_timers (timers, sizeof (timers) / sizeof (timers[0]));
-	start_timer (timers, 0);
+	int	err_code, passed;
 
 /* Convert current iteration to binary.  Apply the shift count. */
 
@@ -6580,26 +6633,17 @@ int jacobi_test (
 	mpz_ui_pow_ui (b, 2, p);
 	mpz_sub_ui (b, b, 1);
 
-/* Free giants, compute the Jacobi symbol (a-2|Mp) */
+/* Compute (a-2|Mp), which is -1 for an error-free LL iteration */
 
-	silent_Jacobi = IniGetInt (INI_FILE, "SilentJacobi", 0);
-	if (!silent_Jacobi) OutputStr (thread_num, "Running Jacobi error check.\n");
 	mpz_sub_ui (a, a, 2);
 	if (mpz_sgn (a) < 0) mpz_add (a, a, b);
-	Jacobi_symbol = mpz_jacobi (a, b);
-
-/* End the timer, print out PASS/FAIL message along with time taken */
-
-	end_timer (timers, 0);
-	sprintf (buf, "Jacobi error check %s.  Time: %6.3f sec.\n", Jacobi_symbol == -1 ? "passed" : "failed", timer_value (timers, 0));
-	if (!silent_Jacobi) OutputStr (thread_num, buf);
-	else if (Jacobi_symbol != -1) OutputStr (thread_num, "Jacobi error-check failed\n");
+	passed = jacobi_test_mpz (thread_num, a, b, -1, NULL, NULL);
 
 /* Cleanup and return */
 
 	mpz_clear (a);
 	mpz_clear (b);
-	return (Jacobi_symbol == -1);
+	return (passed);
 
 /* Memory allocation error */
 
@@ -6649,11 +6693,7 @@ int prime (
 /* Grab setting from INI file.  Fast (sub-quadratic) Jacobi testing was introduced in GMP version 5.1.0. */
 
 	Jacobi_testing_enabled = IniGetInt (INI_FILE, "JacobiErrorCheck", 1);
-	{
-		int	major_ver, minor_ver;
-		sscanf (gmp_version, "%d.%d", &major_ver, &minor_ver);
-		if (major_ver < 5 || (major_ver == 5 && minor_ver < 1)) Jacobi_testing_enabled = FALSE;
-	}
+	if (! jacobi_testing_available ()) Jacobi_testing_enabled = FALSE;
 
 /* Do some of the trial factoring.  We treat factoring that is part of a */
 /* LL test as priority work (done in pass 1).  We don't do all the trial */
