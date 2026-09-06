@@ -10393,13 +10393,210 @@ typedef struct {
 	gwnum	*poly2;		/* Array of poly2 coefficients for helper routine to compute */
 	uint64_t remaining_poly2_size; /* Number of poly2 coefficients to compute */
 	gwnum	*points;	/* Array of evaluated points for helper routine to accumulate into gg for later GCD */
+
+	/* Jacobi error checking of the stage 1 residue */
+	unsigned long error_count; /* Counts of errors that have occurred, same encoding as the LL and PRP error counts */
+	unsigned long restart_error_count; /* Error count to carry across a restart, since the save file predates the error */
+	int	jacobi_enabled;	/* TRUE if Jacobi error checks are being run on the stage 1 residue */
+	int	jacobi_base_symbol; /* The Jacobi symbol (base|N).  The symbol an error-free residue has when its exponent is odd. */
+	int	jacobi_N_initialized; /* TRUE if jacobi_N has been initialized */
+	mpz_t	jacobi_N;	/* The number gwnum is working modulo, in GMP format.  Not the same as the GCD's N, which has known factors removed. */
+	int	jacobi_check_pending; /* TRUE if a restored stage 0 save file still owes us its on-load check */
+	int	jacobi_thread_active; /* TRUE if a Jacobi check is running in the background */
+	gwthread jacobi_thread_id; /* Handle of the background Jacobi thread */
+	int	jacobi_value_initialized; /* TRUE if jacobi_value has been initialized */
+	mpz_t	jacobi_value;	/* The residue the background Jacobi check is working on */
+	int	jacobi_expected;/* The Jacobi symbol the background check must produce */
+	int	jacobi_result;	/* TRUE if the background check passed */
+	double	jacobi_elapsed;	/* Seconds the background check took */
 } pm1handle;
+
+/* A point in stage 1.  Used to decide whether a save file is newer than the point a failed error check requires us to restart */
+/* from.  Stage 0 is ordered by its bit number.  The rest of stage 1 is ordered by the prime it has reached, within one pass */
+/* over stage 1, which is identified by the bound that pass started from. */
+
+typedef struct {
+	int	valid;		/* FALSE if no position has been recorded */
+	int	state;		/* PM1_STATE_STAGE0 or PM1_STATE_STAGE1 */
+	uint64_t B_done;	/* Stage 1 bound the pass started from.  Stage 1 only. */
+	uint64_t prime;		/* Prime reached.  Stage 1 only. */
+	uint64_t bitnum;	/* Exponent bit reached.  Stage 0 only. */
+} pm1_position;
+
+/* Record where a restored save file, or the running computation, has got to.  Only stage 1 positions are meaningful. */
+
+void pm1_get_position (
+	pm1handle *pm1data,
+	pm1_position *pos)
+{
+	pos->valid = (pm1data->state == PM1_STATE_STAGE0 || pm1data->state == PM1_STATE_STAGE1);
+	pos->state = pm1data->state;
+	pos->B_done = pm1data->B_done;
+	pos->prime = pm1data->stage1_prime;
+	pos->bitnum = pm1data->stage0_bitnum;
+}
+
+/* Return TRUE if a restored save file is at or past the given position.  Files in a different state, or from a different pass */
+/* over stage 1, are not comparable and are never rejected. */
+
+int pm1_at_or_after (
+	pm1handle *pm1data,
+	pm1_position *pos)
+{
+	if (! pos->valid || pm1data->state != pos->state) return (FALSE);
+	if (pos->state == PM1_STATE_STAGE0) return (pm1data->stage0_bitnum >= pos->bitnum);
+	if (pm1data->B_done != pos->B_done) return (FALSE);
+	return (pm1data->stage1_prime >= pos->prime);
+}
+
+/* Jacobi error checking of the P-1 stage 1 residue. */
+
+/* Stage 1 computes x = base^E mod N, so the Jacobi symbol of an error-free x is (base|N)^E.  That is (base|N) when E is odd */
+/* and 1 when E is even.  calc_exp always folds 2n into the exponent, so E is even everywhere except part way through the */
+/* stage 0 loop, which walks the exponent one bit at a time starting from the most significant bit. */
+/* */
+/* What this can and cannot catch.  Since x_{k+1} = x_k^2 * base^b, the symbol of the new residue is J(base)^b no matter what */
+/* x_k was -- squaring maps every value, right or wrong, into the quadratic residues.  So a residue corrupted at one iteration */
+/* has the expected symbol at the next one, and a check placed later in the run detects an arithmetic error 0% of the time. */
+/* Measured: 47.8% at the iteration of the error, 0.0% one iteration later and thereafter.  This is not the Lucas-Lehmer case, */
+/* where J(s_n - 2) = J(s_{n-1} - 2) * J(s_{n-1} + 2) carries a corruption forward and keeps detecting it at 50%. */
+/* What is left is worth having and is why the check exists here: a residue that arrives already wrong, from a save file or */
+/* from the conversion out of gwnum, has not been squared since, so it is caught half the time.  That is why the checks are */
+/* on load and at the end of stage 1, and why there are none in the middle of the loop -- those would cost about 1% and */
+/* detect essentially nothing.  Error detection for the stage 1 arithmetic itself needs a Gerbicz check. */
+
+/* Set up Jacobi error checking.  Called once per run, after gwsetup, since a restart rebuilds this state. */
+
+void pm1_jacobi_init (
+	pm1handle *pm1data,
+	struct work_unit *w,	/* The number being factored, as k*b^n+c */
+	int	base)		/* The base stage 1 exponentiates, 3 or 5 */
+{
+	mpz_t	tmp;
+
+	pm1data->jacobi_enabled = FALSE;
+	pm1data->jacobi_check_pending = FALSE;
+	if (! IniGetInt (INI_FILE, "Pminus1JacobiErrorCheck", 1)) return;
+
+/* Fast (sub-quadratic) Jacobi symbols arrived in GMP 5.1.0.  Below that the check costs more than it is worth. */
+
+	if (! jacobi_testing_available ()) return;
+
+/* Build the modulus.  This must be k*b^n+c rather than the N used for the GCD, which has any known factors divided out. */
+/* Stage 1 works modulo the full number, so that is the modulus its residue must be tested against. */
+
+	if (! pm1data->jacobi_N_initialized) mpz_init (pm1data->jacobi_N), pm1data->jacobi_N_initialized = TRUE;
+	mpz_init (tmp);
+	mpz_set_d (tmp, w->k);
+	mpz_ui_pow_ui (pm1data->jacobi_N, w->b, w->n);
+	mpz_mul (pm1data->jacobi_N, pm1data->jacobi_N, tmp);
+	if (w->c >= 0) mpz_add_ui (pm1data->jacobi_N, pm1data->jacobi_N, (unsigned long) w->c);
+	else mpz_sub_ui (pm1data->jacobi_N, pm1data->jacobi_N, (unsigned long) -w->c);
+
+/* The Jacobi symbol is only defined for a positive odd modulus */
+
+	if (mpz_sgn (pm1data->jacobi_N) <= 0 || mpz_even_p (pm1data->jacobi_N)) { mpz_clear (tmp); return; }
+
+/* Compute (base|N).  A zero symbol means the base shares a factor with N, so every residue has symbol zero and the check */
+/* can tell us nothing.  P-1 will report that factor on its own. */
+
+	mpz_set_ui (tmp, (unsigned long) base);
+	pm1data->jacobi_base_symbol = mpz_jacobi (tmp, pm1data->jacobi_N);
+	mpz_clear (tmp);
+	if (pm1data->jacobi_base_symbol == 0) return;
+
+	pm1data->jacobi_enabled = TRUE;
+}
+
+/* Background thread that computes one Jacobi symbol.  Output routines are already thread safe -- every worker is a thread. */
+
+void pm1_jacobi_thread (void *arg)
+{
+	pm1handle *pm1data = (pm1handle *) arg;
+	pm1data->jacobi_result = jacobi_test_mpz (pm1data->thread_num, pm1data->jacobi_value, pm1data->jacobi_N,
+						  pm1data->jacobi_expected, "P-1 stage 1", &pm1data->jacobi_elapsed);
+}
+
+/* Start a Jacobi error check on the stage 1 residue.  The check runs in the background so it can overlap the modular inverse */
+/* or GCD that follows stage 1, both single-threaded GMP operations of comparable cost.  Pass the residue as a giant, or NULL */
+/* to use the gwnum in pm1data->x.  Returns FALSE if no check could be started. */
+
+int pm1_jacobi_start (
+	pm1handle *pm1data,
+	giant	x_giant,	/* Stage 1 residue, or NULL to convert pm1data->x */
+	int	expected)	/* The Jacobi symbol an error-free residue must have */
+{
+	giant	tmp = NULL;
+
+	if (! pm1data->jacobi_enabled) return (FALSE);
+	if (pm1data->jacobi_thread_active) return (FALSE);
+
+/* Get hold of the stage 1 residue as a giant */
+
+	if (x_giant == NULL) {
+		if (pm1data->x == NULL) return (FALSE);
+		tmp = allocgiant (((int) pm1data->gwdata.bit_length >> 5) + 10);
+		if (tmp == NULL) return (FALSE);
+		if (gwtogiant (&pm1data->gwdata, pm1data->x, tmp) < 0) { free (tmp); return (FALSE); }
+		x_giant = tmp;
+	}
+
+/* Convert to GMP format and reduce.  gwtogiant does not promise a fully reduced result. */
+
+	if (! pm1data->jacobi_value_initialized) mpz_init (pm1data->jacobi_value), pm1data->jacobi_value_initialized = TRUE;
+	gtompz (x_giant, pm1data->jacobi_value);
+	free (tmp);
+	mpz_mod (pm1data->jacobi_value, pm1data->jacobi_value, pm1data->jacobi_N);
+
+/* A zero residue has Jacobi symbol zero no matter what, so there is nothing to compare against */
+
+	if (mpz_sgn (pm1data->jacobi_value) == 0) return (FALSE);
+
+/* Launch the check */
+
+	pm1data->jacobi_expected = expected;
+	pm1data->jacobi_result = TRUE;
+	pm1data->jacobi_elapsed = 0.0;
+	pm1data->jacobi_thread_active = TRUE;
+	gwthread_create_waitable (&pm1data->jacobi_thread_id, &pm1_jacobi_thread, pm1data);
+	return (TRUE);
+}
+
+/* Wait for a background Jacobi check to finish.  Returns 1 if it passed, 0 if it failed, -1 if no check was running. */
+/* Safe to call at any time, which is what lets the cleanup path guarantee no thread outlives the pm1handle. */
+
+int pm1_jacobi_wait (
+	pm1handle *pm1data)
+{
+	if (! pm1data->jacobi_thread_active) return (-1);
+	gwthread_wait_for_exit (&pm1data->jacobi_thread_id);
+	pm1data->jacobi_thread_active = FALSE;
+	return (pm1data->jacobi_result ? 1 : 0);
+}
+
+/* Run a Jacobi error check and wait for the answer.  Returns 1 if it passed, 0 if it failed, -1 if it could not be run. */
+
+int pm1_jacobi_check (
+	pm1handle *pm1data,
+	giant	x_giant,
+	int	expected)
+{
+	if (! pm1_jacobi_start (pm1data, x_giant, expected)) return (-1);
+	return (pm1_jacobi_wait (pm1data));
+}
 
 /* Perform cleanup functions. */
 
 void pm1_cleanup (
 	pm1handle *pm1data)
 {
+
+/* Make sure no background Jacobi check outlives the handle it reads from */
+
+	pm1_jacobi_wait (pm1data);
+	if (pm1data->jacobi_value_initialized) mpz_clear (pm1data->jacobi_value), pm1data->jacobi_value_initialized = FALSE;
+	if (pm1data->jacobi_N_initialized) mpz_clear (pm1data->jacobi_N), pm1data->jacobi_N_initialized = FALSE;
+	pm1data->jacobi_enabled = FALSE;
 
 /* Free memory */
 
@@ -10413,6 +10610,35 @@ void pm1_cleanup (
 	pm1data->x = NULL;
 	pm1data->gg = NULL;
 	end_sieve (pm1data->sieve_info), pm1data->sieve_info = NULL;
+}
+
+/* Throw away what pm1_restore read from a save file we have decided not to use.  The restore loop then moves on to an older */
+/* backup, whose pm1_restore would otherwise allocate over these and leak them for the rest of the run. */
+
+void pm1_discard_restored (
+	pm1handle *pm1data)
+{
+	free (pm1data->x_binary), pm1data->x_binary = NULL;
+	free (pm1data->invx_binary), pm1data->invx_binary = NULL;
+	free (pm1data->gg_binary), pm1data->gg_binary = NULL;
+	free (pm1data->pairmap), pm1data->pairmap = NULL;
+	if (pm1data->x != NULL) gwfree (&pm1data->gwdata, pm1data->x), pm1data->x = NULL;
+}
+
+/* Add the error count to a JSON result line, using the same encoding and key names as the LL result lines.  Both fields are */
+/* omitted entirely when no error occurred, so a clean P-1 result looks exactly as it always has. */
+
+void pm1_json_add_errors (
+	char	*JSONbuf,
+	unsigned long error_count)
+{
+	const char *sep = "";
+
+	if (error_count == 0) return;
+	sprintf (JSONbuf+strlen(JSONbuf), ", \"error-code\":\"%08lX\", \"errors\":{", error_count);
+	if (error_count & 0x3F00) sprintf (JSONbuf+strlen(JSONbuf), "%s\"Roundoff\":%lu", sep, (error_count >> 8) & 0x3F), sep = ", ";
+	if (error_count & 0xF0) sprintf (JSONbuf+strlen(JSONbuf), "%s\"Jacobi\":%lu", sep, (error_count >> 4) & 0xF), sep = ", ";
+	strcat (JSONbuf, "}");
 }
 
 /* Computes the modular inverse of a number.  This is done using the extended GCD algorithm.  If a factor is accidentally found, it is */
@@ -10497,7 +10723,8 @@ oom:	return (OutOfMemory (pm1data->thread_num));
 //#define PM1_VERSION	5				/* Stage 2 overhaul in 30.7.  P+1 style stage 2, pairing with relp_sets, compressed pairing map */
 //#define PM1_VERSION	6				/* Version 30.8 pre-beta.  Max_stage0_prime and stage0_bitnum stored as uint64_t. */
 //#define PM1_VERSION	7				/* Stage 2 overhaul in 30.8.  Polymult. */
-#define PM1_VERSION	8				/* 30.10 added required_missing */
+//#define PM1_VERSION	8				/* 30.10 added required_missing */
+#define PM1_VERSION	9				/* Added the error count, which records Jacobi error check failures */
 
 void pm1_save (
 	pm1handle *pm1data)
@@ -10518,6 +10745,7 @@ void pm1_save (
 /* Write the file data */
 
 	if (! write_int (fd, pm1data->state, &sum)) goto writeerr;
+	if (! write_uint32 (fd, (uint32_t) pm1data->error_count, &sum)) goto writeerr;
 
 	if (pm1data->state == PM1_STATE_STAGE0) {
 		if (! write_uint64 (fd, pm1data->interim_B, &sum)) goto writeerr;
@@ -10748,6 +10976,19 @@ int pm1_restore (			/* For version 30.4 and later save files */
 /* Read the first part of the save file */
 
 	if (! read_int (fd, &pm1data->state, &sum)) goto readerr;
+
+/* Read the error count.  Save files written before version 9 did not record one. */
+
+	if (version >= 9) {
+		uint32_t tmp;
+		if (! read_uint32 (fd, &tmp, &sum)) goto readerr;
+		pm1data->error_count = tmp;
+	} else
+		pm1data->error_count = 0;
+
+/* An error forced this restart, so the in-memory error count is newer than the one in the save file */
+
+	if (pm1data->restart_error_count) pm1data->error_count = pm1data->restart_error_count;
 
 /* Read state dependent data */
 
@@ -11706,6 +11947,9 @@ int pminus1 (
 	unsigned long maxerr_fftlen = 0;
 	char	filename[32], buf[255], JSONbuf[4000], testnum[100];
 	int	pminus1_base, res, stop_reason, saving, near_fft_limit, echk;
+	int	jres, jacobi_error_count = 0;
+	pm1_position loaded_pos, reject_pos;	/* Where the save file we resumed from was, and the point we must not resume past */
+	int	jacobi_debug_interval, jacobi_inject_iter, jacobi_silent_inject_iter, jacobi_inject_persistent;
 	double	one_over_len, one_over_B, base_pct_complete, one_relp_pct;
 	uint64_t last_output, last_output_t, last_output_r;
 	double	allowable_maxerr, output_adjustment, title_adjustment;
@@ -11733,6 +11977,25 @@ int pminus1 (
 
 	pminus1_base = (w->b != 3 ? 3 : 5);
 	memset (&pm1data, 0, sizeof (pm1handle));
+	memset (&loaded_pos, 0, sizeof (loaded_pos));
+	memset (&reject_pos, 0, sizeof (reject_pos));
+
+/* Debug hooks for testing the Jacobi error check.  All are off by default and cost nothing when off.  They are read here */
+/* rather than after the restart label so that an injected error fires once per work unit, not once per restart. */
+/* Pminus1JacobiCheckEveryIter runs a check every N stage 0 iterations, which exercises the expected-symbol parity rule far */
+/* more thoroughly than the handful of checks a real run performs.  Pminus1JacobiInjectError corrupts the residue once at a */
+/* given iteration, which exercises detection and the backtrack-to-a-good-save-file recovery. */
+/* Pminus1JacobiInjectSilentError corrupts it by a perfect square instead.  Since (4|N) is 1 that leaves the Jacobi symbol */
+/* untouched, and because every later iteration squares the error along with everything else it stays a perfect square, so */
+/* the corruption is invisible to every future check as well.  That makes it a deterministic probe of the blind spot rather */
+/* than a 50/50 one, and the only way to manufacture a residue that passes a check and is then kept as a known-good save */
+/* file.  Pminus1JacobiInjectPersistent re-arms both injectors after every restart, simulating a fault that repeats rather */
+/* than a one-off glitch. */
+
+	jacobi_debug_interval = IniGetInt (INI_FILE, "Pminus1JacobiCheckEveryIter", 0);
+	jacobi_inject_iter = IniGetInt (INI_FILE, "Pminus1JacobiInjectError", 0);
+	jacobi_silent_inject_iter = IniGetInt (INI_FILE, "Pminus1JacobiInjectSilentError", 0);
+	jacobi_inject_persistent = IniGetInt (INI_FILE, "Pminus1JacobiInjectPersistent", 0);
 	pm1data.thread_num = thread_num;
 	pm1data.stage1_threads = get_worker_num_threads (thread_num, HYPERTHREAD_LL);
 	pm1data.stage2_threads = pm1data.stage1_threads + IniGetInt (INI_FILE, "Stage2ExtraThreads", 0);
@@ -11847,13 +12110,25 @@ restart:
 
 	allowable_maxerr = IniGetFloat (INI_FILE, "MaxRoundoffError", (float) 0.4375);
 
+/* Set up Jacobi error checking of the stage 1 residue */
+
+	pm1_jacobi_init (&pm1data, w, pminus1_base);
+
+/* Re-arm the debug injectors if they are meant to simulate a fault that repeats across restarts */
+
+	if (jacobi_inject_persistent) {
+		jacobi_inject_iter = IniGetInt (INI_FILE, "Pminus1JacobiInjectError", 0);
+		jacobi_silent_inject_iter = IniGetInt (INI_FILE, "Pminus1JacobiInjectSilentError", 0);
+	}
+
 /* Check for a save file and read the save file.  If there is an error */
 /* reading the file then restart the P-1 factoring job from scratch. */
 /* Limit number of backup files we try */
 /* to read in case there is an error deleting bad save files. */
 
 	readSaveFileStateInit (&pm1data.read_save_file_state, thread_num, filename);
-	writeSaveFileStateInit (&pm1data.write_save_file_state, filename, 0);
+	writeSaveFileStateInit (&pm1data.write_save_file_state, filename, pm1data.jacobi_enabled ? NUM_JACOBI_BACKUP_FILES : 0);
+	loaded_pos.valid = FALSE;		/* Only meaningful if this pass actually loads a stage 1 save file */
 	for ( ; ; ) {
 		if (! saveFileExists (&pm1data.read_save_file_state)) {
 			/* If there were save files, they are all bad.  Report a message */
@@ -11873,6 +12148,47 @@ restart:
 			saveFileBad (&pm1data.read_save_file_state);
 			continue;
 		}
+
+/* Roll back past a save file that is newer than the point a failed error check requires us to restart from.  For a Jacobi */
+/* check that has failed more than once from the same file, that point is the file itself: the residue in it passed a check */
+/* while already being wrong -- a check that half the time says nothing cannot detect that on reload, since it recomputes the */
+/* same symbol on the same integer -- so the run would fail at the same iteration forever.  Step back to an older generation, */
+/* which is what the extra checked backups exist for.  Same mechanism the PRP code uses to honor restart_counter in prp(), */
+/* including not counting a deliberately skipped file as a bad one. */
+
+		if (pm1_at_or_after (&pm1data, &reject_pos)) {
+			sprintf (buf, "Rolling back past %s, which is newer than the point we must restart from.\n",
+				 pm1data.read_save_file_state.current_filename);
+			OutputBoth (thread_num, buf);
+			pm1_discard_restored (&pm1data);
+			pm1data.read_save_file_state.a_non_bad_save_file_existed = 0;
+			continue;			/* saveFileExists has already advanced to the next backup */
+		}
+		pm1_get_position (&pm1data, &loaded_pos);
+
+/* Jacobi error check the restored stage 1 residue.  A save file carrying a corrupt residue is no more use than one that will */
+/* not read, so treat it the same way and fall back to an older backup.  A stage 0 file cannot be checked yet -- the symbol it */
+/* must have depends on the parity of the partial exponent, which is not known until restart0 recomputes the exponent. */
+
+		if (pm1data.jacobi_enabled) {
+			if (pm1data.state == PM1_STATE_STAGE0) {
+				pm1data.jacobi_check_pending = TRUE;
+			} else if (pm1data.state <= PM1_STATE_STAGE2 || pm1data.state == PM1_STATE_DONE) {
+				jres = pm1_jacobi_check (&pm1data, pm1data.x_binary, 1);
+				if (jres == 0) {
+					inc_error_count (4, &pm1data.error_count);
+					pm1data.restart_error_count = pm1data.error_count;
+					pm1_discard_restored (&pm1data);
+					saveFileBad (&pm1data.read_save_file_state);
+					continue;
+				}
+				if (jres > 0) setWriteSaveFileSpecial (&pm1data.write_save_file_state);
+			}
+		}
+
+/* This is the file we are resuming from, so the restart point that made us skip newer files has done its job */
+
+		reject_pos.valid = FALSE;
 
 /* Handle stage 0 save files.  If the B values do not match we use the bound from the save file for now.  Later we'll do more B if necessary. */
 
@@ -11975,6 +12291,7 @@ restart:
 		OutputBoth (thread_num, buf);
 		goto done;
 	}
+	reject_pos.valid = FALSE;
 
 /* Start this P-1 run from scratch starting with x = 3.  Batalov reported P-1 issues doing P-1 on 3^524288+1.  The final result of stage 1 is one */
 /* because 3^(2^20) mod 3^524288+1 is one.  So, for base 3 numbers we will start with x = 5. */
@@ -12021,6 +12338,23 @@ restart0:
 	one_over_len = 1.0 / (double) len;
 	if (pm1data.stage1_prime < pm1data.B) one_over_len *= (double) pm1data.stage1_prime / (double) pm1data.B;
 
+/* Now that the exponent is known, run the Jacobi error check a restored stage 0 save file still owes us.  The exponent */
+/* accumulated so far is the top stage0_bitnum+1 bits of exp, so its low bit is bit len-stage0_bitnum. */
+
+	if (pm1data.jacobi_check_pending) {
+		pm1data.jacobi_check_pending = FALSE;
+		if (pm1data.stage0_bitnum > 0 && pm1data.stage0_bitnum <= len) {
+			jres = pm1_jacobi_check (&pm1data, NULL,
+						 mpz_tstbit64 (exp, len - pm1data.stage0_bitnum) ? pm1data.jacobi_base_symbol : 1);
+			if (jres == 0) {
+				inc_error_count (4, &pm1data.error_count);
+				saveFileBad (&pm1data.read_save_file_state);
+				goto error_restart;
+			}
+			if (jres > 0) setWriteSaveFileSpecial (&pm1data.write_save_file_state);
+		}
+	}
+
 /* Now take the exponent and raise x to that power */
 
 	gwsetmulbyconst (&pm1data.gwdata, pminus1_base);
@@ -12051,6 +12385,32 @@ restart0:
 
 		pm1data.stage0_bitnum++;
 		w->pct_complete = (double) pm1data.stage0_bitnum * one_over_len;
+
+/* Debug hooks.  Corrupt the residue once, and/or Jacobi error check it far more often than a real run would. */
+
+		if (jacobi_inject_iter && pm1data.stage0_bitnum == (uint64_t) jacobi_inject_iter) {
+			jacobi_inject_iter = 0;
+			OutputBoth (thread_num, "DEBUG: corrupting the P-1 stage 1 residue.\n");
+			gwunfft (&pm1data.gwdata, pm1data.x, pm1data.x);
+			// Multiplying by the base flips the Jacobi symbol whenever (base|N) is -1, which is every Mersenne number, so
+			// the next check fails for certain.  Adding one only flips it half the time, which makes the test itself a
+			// coin toss and is exactly the sort of flaky probe that proves nothing when it stays quiet.
+			if (pm1data.jacobi_base_symbol == -1) gwsmallmul (&pm1data.gwdata, (double) pminus1_base, pm1data.x);
+			else gwsmalladd (&pm1data.gwdata, 1, pm1data.x);
+		}
+		if (jacobi_silent_inject_iter && pm1data.stage0_bitnum == (uint64_t) jacobi_silent_inject_iter) {
+			jacobi_silent_inject_iter = 0;
+			OutputBoth (thread_num, "DEBUG: corrupting the P-1 stage 1 residue by a perfect square (Jacobi symbol unchanged).\n");
+			gwunfft (&pm1data.gwdata, pm1data.x, pm1data.x);
+			gwsmallmul (&pm1data.gwdata, 4.0, pm1data.x);
+		}
+		if (jacobi_debug_interval && pm1data.stage0_bitnum % (uint64_t) jacobi_debug_interval == 0) {
+			gwunfft (&pm1data.gwdata, pm1data.x, pm1data.x);
+			jres = pm1_jacobi_check (&pm1data, NULL,
+						 mpz_tstbit64 (exp, len - pm1data.stage0_bitnum) ? pm1data.jacobi_base_symbol : 1);
+			if (jres == 0) goto jacobi_err;
+			if (jres > 0) jacobi_error_count = 0;
+		}
 
 /* Output the title every so often */
 
@@ -12251,6 +12611,13 @@ more_B:		if (pm1data.x_binary != NULL) {			// pm1_restore can return x as binary
 		gw_clear_maxerr (&pm1data.gwdata);
 	}
 
+/* Jacobi error check the completed stage 1 residue.  This one is mandatory: it is the last chance to catch a corrupt residue */
+/* before a factor is reported, before stage 2 is built on top of it, and before the residue is written out for anyone else to */
+/* use.  Run it in the background so it overlaps the GCD or modular inverse below, both single-threaded GMP operations of */
+/* comparable cost, which makes the check close to free on a machine with a spare core. */
+
+	pm1_jacobi_start (&pm1data, NULL, 1);
+
 /* Check to see if we found a factor - do GCD (x-1, N).  We only do this if there is no stage 2.  If there is a stage 2 we use a trick */
 /* to do the GCD as a by-product of computing V = x + 1/x */
 
@@ -12270,6 +12637,12 @@ more_B:		if (pm1data.x_binary != NULL) {			// pm1_restore can return x as binary
 		strcpy (buf, "Stage 1 GCD complete. Time: ");
 		print_timer (timers, 0, buf, TIMER_NL | TIMER_CLR);
 		OutputStr (thread_num, buf);
+
+/* Collect the end-of-stage-1 Jacobi error check before trusting anything the GCD found */
+
+		jres = pm1_jacobi_wait (&pm1data);
+		if (jres == 0) goto jacobi_err;
+		if (jres > 0) jacobi_error_count = 0, setWriteSaveFileSpecial (&pm1data.write_save_file_state);
 		if (factor != NULL) goto bingo;
 		// No factor found and no second stage
 		pm1data.state = PM1_STATE_DONE;
@@ -12326,6 +12699,13 @@ restart3a:
 	print_timer (timers, 0, buf, TIMER_NL | TIMER_CLR);
 	OutputStr (thread_num, buf);
 	gw_clear_fft_count (&pm1data.gwdata);
+
+/* Collect the end-of-stage-1 Jacobi error check that overlapped the inversion.  There is none when this is the entry point for */
+/* resuming a completed P-1 run with a larger bound #2, in which case the check already ran when the save file was read. */
+
+	jres = pm1_jacobi_wait (&pm1data);
+	if (jres == 0) goto jacobi_err;
+	if (jres > 0) jacobi_error_count = 0;
 
 /* Convert x and invx to binary for saving to a file (also more compact than a gwnum) */
 
@@ -13759,6 +14139,11 @@ msg_and_exit:
 	sprintf (JSONbuf+strlen(JSONbuf), ", \"fft-length\":%lu", pm1data.stage1_fftlen);
 	sprintf (JSONbuf+strlen(JSONbuf), ", \"security-code\":\"%08lX\"", SEC5 (w->n, pm1data.B, pm1data.C > pm1data.B ? pm1data.C : pm1data.B));
 	JSONaddProgramTimestamp (JSONbuf);
+
+/* Record any errors that occurred */
+
+	pm1_json_add_errors (JSONbuf, pm1data.error_count);
+
 	JSONaddExponentKnownFactors (JSONbuf, w);
 	JSONaddUserComputerAID (JSONbuf, w);
 	strcat (JSONbuf, "}");
@@ -13837,7 +14222,9 @@ oom:	stop_reason = OutOfMemory (thread_num);
 
 /* Print a message if we found a factor! */
 
-bingo:	if (pm1data.state < PM1_STATE_MIDSTAGE)
+bingo:	jres = pm1_jacobi_wait (&pm1data);
+	if (jres == 0) goto jacobi_err;
+	if (pm1data.state < PM1_STATE_MIDSTAGE)
 		sprintf (buf, "P-1 found a factor in stage #1, B1=%" PRIu64 ".\n", pm1data.B);
 	else
 		sprintf (buf, "P-1 found a factor in stage #2, B1=%" PRIu64 ", B2=%" PRIu64 ".\n", pm1data.B, pm1data.C);
@@ -13906,6 +14293,11 @@ bingo:	if (pm1data.state < PM1_STATE_MIDSTAGE)
 	sprintf (JSONbuf+strlen(JSONbuf), ", \"fft-length\":%lu", pm1data.stage1_fftlen);
 	sprintf (JSONbuf+strlen(JSONbuf), ", \"security-code\":\"%08lX\"", SEC5 (w->n, pm1data.B, pm1data.state > PM1_STATE_MIDSTAGE ? pm1data.C : pm1data.B));
 	JSONaddProgramTimestamp (JSONbuf);
+
+/* Record any errors that occurred */
+
+	pm1_json_add_errors (JSONbuf, pm1data.error_count);
+
 	JSONaddExponentKnownFactors (JSONbuf, w);
 	JSONaddUserComputerAID (JSONbuf, w);
 	strcat (JSONbuf, "}");
@@ -13970,21 +14362,43 @@ bingo:	if (pm1data.state < PM1_STATE_MIDSTAGE)
 	stop_reason = STOP_WORK_UNIT_COMPLETE;
 	goto exit;
 
+/* A Jacobi error check failed, so the stage 1 residue is corrupt.  Throw it away and resume from the most recent save file, */
+/* which the on-load check vets before we trust it.  Repeated failures point at a systematic problem rather than a one-off */
+/* glitch, so fall back on the roundoff error remedy and move to a larger FFT. */
+
+jacobi_err:
+	inc_error_count (4, &pm1data.error_count);
+	sprintf (buf, "ERROR: %s P-1 stage 1 Jacobi error check failed.  Backtracking to last save file.\n",
+		 gwmodulo_as_string (&pm1data.gwdata));
+	OutputBoth (thread_num, buf);
+	jacobi_error_count++;
+	if (jacobi_error_count >= 2 && loaded_pos.valid) reject_pos = loaded_pos;
+	if (jacobi_error_count >= IniGetInt (INI_FILE, "Pminus1JacobiMaxFailures", 2)) {
+		OutputBoth (thread_num, "Too many Jacobi errors.  Switching to a larger FFT length.\n");
+		maxerr_restart_count++;
+		maxerr_fftlen = gwfftlen (&pm1data.gwdata);
+		pm1data.interim_C = 0;			// We'll get the new interim_C from a save file
+	}
+	goto error_restart;
+
 /* Output an error message saying we are restarting. */
 /* Sleep five minutes before restarting from last save file. */
 
 err:	if (gw_get_maxerr (&pm1data.gwdata) > allowable_maxerr) {
+		inc_error_count (1, &pm1data.error_count);
 		sprintf (buf, "Possible roundoff error (%.8g), backtracking to last save file and using larger FFT.\n\n", gw_get_maxerr (&pm1data.gwdata));
 		OutputStr (thread_num, buf);
 		maxerr_restart_count++;
 		maxerr_fftlen = gwfftlen (&pm1data.gwdata);
 		pm1data.interim_C = 0;				// We'll get the new interim_C from a save file
 	} else {
+		inc_error_count (2, &pm1data.error_count);
 		OutputBoth (thread_num, "SUMOUT error occurred.\n");
 		stop_reason = SleepFive (thread_num);
 		if (stop_reason) goto exit;
 	}
 error_restart:
+	pm1data.restart_error_count = pm1data.error_count;
 	Dmultiple_map.clear ();
 	relp_set_map.clear ();
 	pm1_cleanup (&pm1data);

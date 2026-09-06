@@ -109,6 +109,13 @@ may or may not pass a Jacobi test, the last two save files have passed the Jacob
 check.  In prime.txt:
 	JacobiBackupFiles=N	(default is 2)
 
+P-1 asks for these extra backups too, whenever its stage 1 error checking is on,
+so a P-1 run keeps NumBackupFiles plus JacobiBackupFiles save files rather than
+NumBackupFiles alone.  The special files are the ones that passed a check when
+they were written, which is what a rollback after a failed check falls back to.
+At a 100M-digit exponent each one holds a 41.5 MB residue, so the default
+settings hold about 208 MB per worker instead of 125 MB.
+
 You can disable Jacobi error checking which has a 50% chance of catching
 hardware errors.  You might do this if you are running the first LL test and
 double-checking LL test concurrently.  In prime.txt
@@ -116,6 +123,50 @@ double-checking LL test concurrently.  In prime.txt
 
 You can disable printing Jacobi error-checking messages using this prime.txt entry:
 	SilentJacobi=0 or 1	(default is 0)
+
+P-1 stage 1 is Jacobi error checked too, but it checks something different from
+the LL check above, and it is worth being precise about what.  Stage 1 computes
+x = 3^E (or 5^E for base 3 numbers), so the Jacobi symbol of an error-free x is
+known in advance.  However each iteration squares the residue, and squaring turns
+any value, right or wrong, into a square, whose symbol is fixed.  So a residue
+corrupted by a bad multiply has the expected symbol again one iteration later.
+Measured detection of an arithmetic error is 47.8% if the check runs at the
+iteration where it happened and 0.0% at every iteration after that.  The LL
+sequence does not behave this way, which is why its check does keep working.
+
+What is left is still worth having: a residue that arrives already wrong, from a
+save file or from the conversion out of the FFT format, has not been squared
+since, so it is caught half the time.  So a check runs when a stage 1 save file
+is read, and always at the end of stage 1, before a factor is reported and before
+the residue is written out for anyone else to build on.  There are deliberately
+no checks in the middle of stage 1: they would cost about 1% and find nothing.
+Detecting errors in the stage 1 arithmetic itself needs a Gerbicz check, not a
+Jacobi one.  To disable the Jacobi checks, in prime.txt:
+	Pminus1JacobiErrorCheck=0 or 1	(default is 1)
+
+A failed Jacobi check discards the residue and backtracks to the last save file,
+which is itself checked before being trusted.  Repeated failures point at a
+systematic problem rather than a one-off glitch, so after this many the program
+moves to a larger FFT length, the same remedy it uses for roundoff errors.  Failed
+checks, and roundoff errors, are recorded in the result line's error-code field,
+with the same encoding LL and PRP results use.  In prime.txt:
+	Pminus1JacobiMaxFailures=N	(default is 2)
+
+Four debug settings exist for testing the P-1 check itself, all off by default.
+The first runs a check every N stage 0 iterations, far more often than any real
+run needs.  The second corrupts the stage 1 residue once at the given iteration,
+so that detection and recovery can be observed.  The third corrupts it by a
+perfect square instead: that leaves the Jacobi symbol untouched, and stays a
+perfect square through every later squaring, so the corruption is invisible to
+every check from then on.  It is the only way to manufacture a residue that
+passes a check and is then kept as a known-good save file, and it is what makes
+the 50% blind spot testable rather than a coin flip.  The fourth re-arms both
+injectors after each restart, simulating a fault that repeats rather than a
+one-off glitch.  In prime.txt:
+	Pminus1JacobiCheckEveryIter=N	(default is 0)
+	Pminus1JacobiInjectError=N	(default is 0)
+	Pminus1JacobiInjectSilentError=N	(default is 0)
+	Pminus1JacobiInjectPersistent=0 or 1	(default is 0)
 
 You can force the Options/CPU dialog to display times using AM/PM or
 a 24-hour clock format.  Otherwise, the program will make its best guess

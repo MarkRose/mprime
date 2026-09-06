@@ -6556,8 +6556,9 @@ int jacobi_test_mpz (
 	double	*elapsed)		/* Returned time the check took, in seconds.  May be NULL. */
 {
 	int	Jacobi_symbol, silent_Jacobi, passed;
+	const char *verdict;
 	double	timers[1];
-	char	buf[120];
+	char	buf[200];
 
 /* Clear and start a timer */
 
@@ -6575,18 +6576,26 @@ int jacobi_test_mpz (
 	Jacobi_symbol = mpz_jacobi (a, b);
 	passed = (Jacobi_symbol == expected);
 
+/* A zero symbol is a different fault from a wrong sign.  It means the value shares a factor with the modulus, which for */
+/* a composite LL exponent happens on every iteration from a certain point onwards, and which P-1 should never produce at */
+/* all.  Say which one it was rather than reporting a generic failure. */
+
+	if (passed) verdict = "passed";
+	else if (Jacobi_symbol == 0) verdict = "failed (symbol 0: value shares a factor with the modulus)";
+	else verdict = "failed";
+
 /* End the timer, print out PASS/FAIL message along with time taken */
 
 	end_timer (timers, 0);
 	if (elapsed != NULL) *elapsed = timer_value (timers, 0);
 	if (what == NULL)
-		sprintf (buf, "Jacobi error check %s.  Time: %6.3f sec.\n", passed ? "passed" : "failed", timer_value (timers, 0));
+		sprintf (buf, "Jacobi error check %s.  Time: %6.3f sec.\n", verdict, timer_value (timers, 0));
 	else
-		sprintf (buf, "%s Jacobi error check %s.  Time: %6.3f sec.\n", what, passed ? "passed" : "failed", timer_value (timers, 0));
+		sprintf (buf, "%s Jacobi error check %s.  Time: %6.3f sec.\n", what, verdict, timer_value (timers, 0));
 	if (!silent_Jacobi) OutputStr (thread_num, buf);
 	else if (!passed) {
-		if (what == NULL) strcpy (buf, "Jacobi error-check failed\n");
-		else sprintf (buf, "%s Jacobi error-check failed\n", what);
+		if (what == NULL) sprintf (buf, "Jacobi error-check %s\n", verdict);
+		else sprintf (buf, "%s Jacobi error-check %s\n", what, verdict);
 		OutputStr (thread_num, buf);
 	}
 
