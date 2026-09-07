@@ -1,5 +1,11 @@
 # Build products
 *.o
+# ...but these four are prebuilt trial-factoring objects that ship with the
+# source zip, not build output. Without them the link fails.
+!/linux/factor32.o
+!/linux64/factor64.o
+!/prime95/macosx/factor32.o
+!/prime95/macosx64/factor64.o
 /linux/mprime
 /linux64/mprime
 /macosx/mprime
@@ -18,3 +24,14 @@
 /results.txt
 /prime.log
 /prime.spl
+
+# Locally built gwnum libraries (copied/derived from gwnum/linux64/gwnum.a)
+/gwnum/gwnum.a
+/gwnum/polymult.a
+/*/prime.txt
+/*/local.txt
+/*/worktodo.txt
+/*/results.txt
+/*/prime.log
+/*/prime.spl
+/*/mprime.pid
