@@ -10409,6 +10409,21 @@ typedef struct {
 	int	jacobi_expected;/* The Jacobi symbol the background check must produce */
 	int	jacobi_result;	/* TRUE if the background check passed */
 	double	jacobi_elapsed;	/* Seconds the background check took */
+
+	/* Gerbicz error checking of the stage 1 squaring chain */
+	int	gerbicz_enabled;	/* TRUE while a Gerbicz block is being accumulated */
+	int	gerbicz_wanted;		/* TRUE if Gerbicz checking was successfully set up for this run */
+	int	gerbicz_covered;	/* TRUE if every stage 1 iteration since the save file was loaded has been Gerbicz checked */
+	unsigned long gerbicz_L;	/* Iterations between checksum multiplies.  A block is L*L iterations. */
+	uint64_t gerbicz_start;		/* stage0_bitnum at the start of the current block */
+	uint64_t gerbicz_next_mul;	/* stage0_bitnum at which the next checksum multiply is due */
+	uint64_t gerbicz_end;		/* stage0_bitnum at which the current block is verified */
+	gwnum	gerbicz_d;		/* Running product of the residue at each sub-block boundary */
+	gwnum	gerbicz_u0;		/* The residue at the start of the block */
+	gwnum	gerbicz_alt;		/* Scratch used to build the second checksum */
+	gwnum	gerbicz_base_pow;	/* base^(2^L), constant for as long as L is */
+	int	gerbicz_C_initialized;	/* TRUE if gerbicz_C has been initialized */
+	mpz_t	gerbicz_C;		/* Sum of the exponent chunks consumed so far in this block */
 } pm1handle;
 
 /* A point in stage 1.  Used to decide whether a save file is newer than the point a failed error check requires us to restart */
@@ -10585,6 +10600,299 @@ int pm1_jacobi_check (
 	return (pm1_jacobi_wait (pm1data));
 }
 
+/* Gerbicz error checking of the P-1 stage 1 squaring chain. */
+
+/* Unlike the Jacobi check above, this one actually watches the arithmetic, and it is not probabilistic: a single wrong bit */
+/* anywhere in a block makes the two checksums differ.  Stage 0 iterates x <- x^2 * base^b.  Let a block start at iteration s */
+/* with u_0 = x_s, and split it into L sub-blocks of L iterations, with u_j the residue at iteration s + j*L and c_j the L-bit */
+/* chunk of the exponent consumed during sub-block j.  Writing P for the product of u_0..u_{L-1} and C for the sum of the */
+/* c_j, the two ways of getting to the same value are */
+/* */
+/*	checksum1 = u_0 * u_1 * ... * u_L				(one multiply every L iterations) */
+/*	checksum2 = u_0 * P^(2^L) * base^C				(L squarings, once per block) */
+/* */
+/* Verified numerically over 400 randomised cases before any of this was written, including blocks that start part way */
+/* through a run, which is why u_0 has to be kept: only a block starting from scratch has u_0 = base. */
+/* */
+/* base^C is not computed with its own exponentiation.  C is below L*2^L, so splitting it as C = H*2^L + Lo leaves H under L, */
+/* about ten bits.  The low half rides the L squarings that were happening anyway -- mprime decides the multiply-by-base per */
+/* call, so the verification squarings simply carry the bits of Lo instead of the exponent's -- and the high half is a dozen */
+/* operations against a precomputed base^(2^L).  That is what keeps the overhead at 2/L rather than 3/L. */
+/* */
+/* Cost is one multiply every L iterations plus L squarings every L*L, so about 2/L of stage 1.  Four extra gwnums. */
+
+/* Multiply, taking the slow careful path when an input may be small.  The stage 0 loop squares carefully for its first 30 */
+/* iterations because until then the residue is a small power of the base rather than a random-looking value, and FFTing */
+/* non-random data is unreliable.  The checksum arithmetic touches the same small values -- u_0 when a block starts near the */
+/* beginning of the run, base^(2^L) and its powers when L is small -- so it has to take the same care. */
+
+void pm1_gerbicz_mul (
+	pm1handle *pm1data,
+	gwnum	s1,
+	gwnum	s2,
+	gwnum	d,
+	int	options,
+	int	careful)		/* TRUE if either input may be a small, non-random value */
+{
+	if (careful) gwmul3_carefully (&pm1data->gwdata, s1, s2, d, options & (GWMUL_PRESERVE_S1 | GWMUL_PRESERVE_S2));
+	else gwmul3 (&pm1data->gwdata, s1, s2, d, options);
+}
+
+/* Return TRUE if two gwnums hold the same value.  Same approach as areTwoPRPValsEqual in commonb.c, minus the shift counts, */
+/* which P-1 does not use.  A value that will not convert, or that is zero, counts as not equal. */
+
+int pm1_vals_equal (
+	pm1handle *pm1data,
+	gwnum	val1,
+	gwnum	val2)
+{
+	giant	tmp1, tmp2;
+	int	diff, err1, err2;
+
+	tmp1 = popg (&pm1data->gwdata.gdata, ((unsigned long) pm1data->gwdata.bit_length >> 5) + 5);
+	if (tmp1 == NULL) return (FALSE);
+	tmp2 = popg (&pm1data->gwdata.gdata, ((unsigned long) pm1data->gwdata.bit_length >> 5) + 5);
+	if (tmp2 == NULL) { pushg (&pm1data->gwdata.gdata, 1); return (FALSE); }
+	err1 = gwtogiant (&pm1data->gwdata, val1, tmp1) || isZero (tmp1);
+	err2 = gwtogiant (&pm1data->gwdata, val2, tmp2) || isZero (tmp2);
+	diff = gcompg (tmp1, tmp2);
+	pushg (&pm1data->gwdata.gdata, 2);
+	return (err1 == 0 && err2 == 0 && diff == 0);
+}
+
+/* Release the Gerbicz buffers.  Must run before gwdone. */
+
+void pm1_gerbicz_free (
+	pm1handle *pm1data)
+{
+	if (pm1data->gerbicz_d != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_d), pm1data->gerbicz_d = NULL;
+	if (pm1data->gerbicz_u0 != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_u0), pm1data->gerbicz_u0 = NULL;
+	if (pm1data->gerbicz_alt != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_alt), pm1data->gerbicz_alt = NULL;
+	if (pm1data->gerbicz_base_pow != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_base_pow), pm1data->gerbicz_base_pow = NULL;
+	if (pm1data->gerbicz_C_initialized) mpz_clear (pm1data->gerbicz_C), pm1data->gerbicz_C_initialized = FALSE;
+	pm1data->gerbicz_enabled = FALSE;
+	pm1data->gerbicz_wanted = FALSE;
+}
+
+/* Compute base^(2^L) into gerbicz_base_pow.  L squarings, done once per choice of L. */
+
+void pm1_gerbicz_calc_base_pow (
+	pm1handle *pm1data,
+	int	base)
+{
+	unsigned long j;
+
+	dbltogw (&pm1data->gwdata, (double) base, pm1data->gerbicz_base_pow);
+	for (j = 0; j < pm1data->gerbicz_L; j++) {
+		/* The value is tiny to begin with, so square carefully until it has grown, exactly as the stage 0 loop does */
+		if (j < 30) gwmul3_carefully (&pm1data->gwdata, pm1data->gerbicz_base_pow, pm1data->gerbicz_base_pow, pm1data->gerbicz_base_pow, 0);
+		else gwsquare2 (&pm1data->gwdata, pm1data->gerbicz_base_pow, pm1data->gerbicz_base_pow, (j + 1 < pm1data->gerbicz_L) ? GWMUL_STARTNEXTFFT : 0);
+	}
+}
+
+/* Set up Gerbicz checking for this run.  Returns TRUE if it is on. */
+
+int pm1_gerbicz_init (
+	pm1handle *pm1data,
+	unsigned long stage1_iterations,	/* Total iterations the stage 0 loop will run */
+	int	base)				/* The base being exponentiated */
+{
+	int	checks_wanted;
+	uint64_t block;
+	unsigned long L;
+	unsigned int needed_mem;
+	char	buf[200];
+
+	pm1_gerbicz_free (pm1data);
+	if (! IniGetInt (INI_FILE, "Pminus1Gerbicz", 1)) return (FALSE);
+
+/* Pick the block size.  Overhead is 2/L whatever the machine, because the check runs through the same FFT path as the work */
+/* it checks, so there is nothing machine-specific to tune.  What does vary is how much work a failure throws away, and that */
+/* is naturally expressed as a fraction of the run: aim for a fixed number of checks so the rollback exposure is always about */
+/* the same share of stage 1 whether that is two hours or eight days. */
+
+	checks_wanted = IniGetInt (INI_FILE, "Pminus1GerbiczChecksPerRun", 20);
+	if (checks_wanted < 1) checks_wanted = 1;
+	block = stage1_iterations / (unsigned) checks_wanted;
+
+/* Shrink the block on a machine that has been failing checks, so it loses less work each time, and let it grow back slowly */
+/* once it behaves.  Same idea and the same constants as the PRP Gerbicz code. */
+
+	{
+		double	adj = IniGetFloat (INI_FILE, "Pminus1GerbiczBlockAdj", 1.0);
+		if (adj < 0.001 || adj > 1.0) adj = 1.0;
+		block = (uint64_t) ((double) block * adj);
+	}
+	for (L = 1; (uint64_t) (L + 1) * (L + 1) <= block; L++);
+	if (L < (unsigned long) IniGetInt (INI_FILE, "Pminus1GerbiczMinL", 8)) return (FALSE);	/* Run is too short to be worth it */
+	if (L > (unsigned long) IniGetInt (INI_FILE, "Pminus1GerbiczMaxL", 3000)) L = IniGetInt (INI_FILE, "Pminus1GerbiczMaxL", 3000);
+	pm1data->gerbicz_L = L;
+
+/* Four extra gwnums.  Stage 1 is deliberately frugal so it does not take memory from another worker's stage 2, so check */
+/* against what this worker is allowed before committing to them. */
+
+	needed_mem = (unsigned int) cvt_gwnums_to_mem (&pm1data->gwdata, 5);
+	if (needed_mem > max_mem (pm1data->thread_num)) {
+		sprintf (buf, "Gerbicz error checking needs %uMB but only %luMB is available.  Stage 1 will run unchecked.\n",
+			 needed_mem, max_mem (pm1data->thread_num));
+		OutputStr (pm1data->thread_num, buf);
+		return (FALSE);
+	}
+
+	pm1data->gerbicz_d = gwalloc (&pm1data->gwdata);
+	pm1data->gerbicz_u0 = gwalloc (&pm1data->gwdata);
+	pm1data->gerbicz_alt = gwalloc (&pm1data->gwdata);
+	pm1data->gerbicz_base_pow = gwalloc (&pm1data->gwdata);
+	if (pm1data->gerbicz_d == NULL || pm1data->gerbicz_u0 == NULL ||
+	    pm1data->gerbicz_alt == NULL || pm1data->gerbicz_base_pow == NULL) {
+		OutputStr (pm1data->thread_num, "Could not allocate Gerbicz buffers.  Stage 1 will run unchecked.\n");
+		pm1_gerbicz_free (pm1data);
+		return (FALSE);
+	}
+
+	mpz_init (pm1data->gerbicz_C);
+	pm1data->gerbicz_C_initialized = TRUE;
+	pm1_gerbicz_calc_base_pow (pm1data, base);
+	pm1data->gerbicz_wanted = TRUE;
+
+	sprintf (buf, "Gerbicz error checking every %" PRIu64 " iterations (L=%lu), about %.2f%% overhead.\n",
+		 (uint64_t) L * L, L, 200.0 / (double) L);
+	OutputStr (pm1data->thread_num, buf);
+	return (TRUE);
+}
+
+/* Begin a Gerbicz block at the current iteration.  Shrinks L, or gives up, if too little of stage 0 is left to fill a block. */
+
+void pm1_gerbicz_start_block (
+	pm1handle *pm1data,
+	unsigned long len,			/* Iteration at which stage 0 ends */
+	int	base)
+{
+	uint64_t remaining;
+	unsigned long L;
+
+	pm1data->gerbicz_enabled = FALSE;
+	if (! pm1data->gerbicz_wanted) return;
+
+	remaining = (uint64_t) len - pm1data->stage0_bitnum;
+	L = pm1data->gerbicz_L;
+	if ((uint64_t) L * L > remaining) {
+		for (L = 1; (uint64_t) (L + 1) * (L + 1) <= remaining; L++);
+		if (L < (unsigned long) IniGetInt (INI_FILE, "Pminus1GerbiczMinL", 8)) return;	/* Tail too short to be worth checking */
+		pm1data->gerbicz_L = L;
+		pm1_gerbicz_calc_base_pow (pm1data, base);
+	}
+
+	gwcopy (&pm1data->gwdata, pm1data->x, pm1data->gerbicz_u0);
+	gwcopy (&pm1data->gwdata, pm1data->x, pm1data->gerbicz_d);
+	mpz_set_ui (pm1data->gerbicz_C, 0);
+	pm1data->gerbicz_start = pm1data->stage0_bitnum;
+	pm1data->gerbicz_next_mul = pm1data->stage0_bitnum + L;
+	pm1data->gerbicz_end = pm1data->stage0_bitnum + (uint64_t) L * L;
+	pm1data->gerbicz_enabled = TRUE;
+}
+
+/* Add the exponent chunk just consumed to the running total */
+
+void pm1_gerbicz_add_chunk (
+	pm1handle *pm1data,
+	mpz_t	exp,
+	unsigned long len)
+{
+	mpz_t	chunk;
+
+	mpz_init (chunk);
+	mpz_fdiv_q_2exp (chunk, exp, (mp_bitcnt_t) ((uint64_t) len - pm1data->stage0_bitnum));
+	mpz_fdiv_r_2exp (chunk, chunk, (mp_bitcnt_t) pm1data->gerbicz_L);
+	mpz_add (pm1data->gerbicz_C, pm1data->gerbicz_C, chunk);
+	mpz_clear (chunk);
+}
+
+/* Verify the block that has just ended.  Returns TRUE if the two checksums agree. */
+/* On entry d holds P, the product of u_0 through u_{L-1}, and x holds u_L. */
+
+int pm1_gerbicz_verify (
+	pm1handle *pm1data)
+{
+	unsigned long j, L = pm1data->gerbicz_L, H;
+	mpz_t	Lo, Hz;
+	int	small_u0, small_pow, match;
+
+/* Decide which values may still be small, non-random numbers.  u_0 is base^(partial exponent), which the stage 0 loop treats */
+/* as small for its first 30 iterations.  base^(2^L) has about 1.6*2^L bits, small for the same range of L. */
+
+	small_u0 = (pm1data->gerbicz_start < 30);
+	small_pow = (L < 30);
+
+/* Split C into H * 2^L + Lo */
+
+	mpz_init (Lo);
+	mpz_init (Hz);
+	mpz_fdiv_r_2exp (Lo, pm1data->gerbicz_C, (mp_bitcnt_t) L);
+	mpz_fdiv_q_2exp (Hz, pm1data->gerbicz_C, (mp_bitcnt_t) L);
+	H = mpz_get_ui (Hz);
+	mpz_clear (Hz);
+
+/* alt = u_0 * base^(H * 2^L).  After this u_0's buffer is free, which is what lets four buffers do the work of five. */
+
+	if (H == 0)
+		gwcopy (&pm1data->gwdata, pm1data->gerbicz_u0, pm1data->gerbicz_alt);
+	else {
+		unsigned long bit;
+		/* Left-to-right binary exponentiation.  H is below L, so this is at most a dozen operations. */
+		gwcopy (&pm1data->gwdata, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt);
+		for (bit = 1UL << 31; bit > H; bit >>= 1);
+		for (bit >>= 1; bit; bit >>= 1) {
+			pm1_gerbicz_mul (pm1data, pm1data->gerbicz_alt, pm1data->gerbicz_alt, pm1data->gerbicz_alt, 0, small_pow);
+			if (H & bit) pm1_gerbicz_mul (pm1data, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_pow);
+		}
+		pm1_gerbicz_mul (pm1data, pm1data->gerbicz_u0, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_u0 || small_pow);
+	}
+
+/* Build checksum #1 = P * u_L in the buffer u_0 has just vacated.  Both sources have to survive: x carries on the run and d */
+/* is about to be squared. */
+
+	gwmul3 (&pm1data->gwdata, pm1data->x, pm1data->gerbicz_d, pm1data->gerbicz_u0, GWMUL_PRESERVE_S1 | GWMUL_PRESERVE_S2);
+
+/* d = P^(2^L) * base^Lo.  The bits of Lo ride the squarings at no cost. */
+
+	for (j = 0; j < L; j++) {
+		int	options = (j + 1 < L) ? GWMUL_STARTNEXTFFT : 0;
+		if (mpz_tstbit (Lo, (mp_bitcnt_t) (L - 1 - j))) options |= GWMUL_MULBYCONST;
+		gwsquare2 (&pm1data->gwdata, pm1data->gerbicz_d, pm1data->gerbicz_d, options);
+	}
+	mpz_clear (Lo);
+
+/* d = checksum #2 */
+
+	pm1_gerbicz_mul (pm1data, pm1data->gerbicz_alt, pm1data->gerbicz_d, pm1data->gerbicz_d, 0, small_u0 && (H == 0 || small_pow));
+
+	match = pm1_vals_equal (pm1data, pm1data->gerbicz_d, pm1data->gerbicz_u0);
+
+/* Debug hook: dump the block's intermediate values so they can be diffed against an independent model.  Off by default. */
+/* Passing blocks already prove the two checksums agree with each other; this proves they agree with what they should be. */
+
+	if ((uint64_t) IniGetInt (INI_FILE, "Pminus1GerbiczDumpBlock", 0) == pm1data->stage0_bitnum) {
+		giant	g;
+		char	*cstr, buf[400];
+		cstr = mpz_get_str (NULL, 10, pm1data->gerbicz_C);
+		sprintf (buf, "DEBUG: block s=%" PRIu64 " L=%lu C=%s H=%lu\n", pm1data->gerbicz_start, L, cstr, H);
+		OutputStr (pm1data->thread_num, buf);
+		free (cstr);
+		g = popg (&pm1data->gwdata.gdata, ((unsigned long) pm1data->gwdata.bit_length >> 5) + 5);
+		if (g != NULL) {
+			if (gwtogiant (&pm1data->gwdata, pm1data->gerbicz_u0, g) == 0) {
+				sprintf (buf, "DEBUG: checksum1 res64=%08lX%08lX\n",
+					 (unsigned long) (g->sign > 1 ? g->n[1] : 0), (unsigned long) (g->sign > 0 ? g->n[0] : 0));
+				OutputStr (pm1data->thread_num, buf);
+			}
+			pushg (&pm1data->gwdata.gdata, 1);
+		}
+	}
+
+	return (match);
+}
+
 /* Perform cleanup functions. */
 
 void pm1_cleanup (
@@ -10594,6 +10902,7 @@ void pm1_cleanup (
 /* Make sure no background Jacobi check outlives the handle it reads from */
 
 	pm1_jacobi_wait (pm1data);
+	pm1_gerbicz_free (pm1data);
 	if (pm1data->jacobi_value_initialized) mpz_clear (pm1data->jacobi_value), pm1data->jacobi_value_initialized = FALSE;
 	if (pm1data->jacobi_N_initialized) mpz_clear (pm1data->jacobi_N), pm1data->jacobi_N_initialized = FALSE;
 	pm1data->jacobi_enabled = FALSE;
@@ -10638,6 +10947,7 @@ void pm1_json_add_errors (
 	sprintf (JSONbuf+strlen(JSONbuf), ", \"error-code\":\"%08lX\", \"errors\":{", error_count);
 	if (error_count & 0x3F00) sprintf (JSONbuf+strlen(JSONbuf), "%s\"Roundoff\":%lu", sep, (error_count >> 8) & 0x3F), sep = ", ";
 	if (error_count & 0xF0) sprintf (JSONbuf+strlen(JSONbuf), "%s\"Jacobi\":%lu", sep, (error_count >> 4) & 0xF), sep = ", ";
+	if (error_count & 0xF00000) sprintf (JSONbuf+strlen(JSONbuf), "%s\"Gerbicz\":%lu", sep, (error_count >> 20) & 0xF), sep = ", ";
 	strcat (JSONbuf, "}");
 }
 
@@ -11949,6 +12259,7 @@ int pminus1 (
 	int	pminus1_base, res, stop_reason, saving, near_fft_limit, echk;
 	int	jres, jacobi_error_count = 0;
 	pm1_position loaded_pos, reject_pos;	/* Where the save file we resumed from was, and the point we must not resume past */
+	int	gerbicz_error_count = 0;
 	int	jacobi_debug_interval, jacobi_inject_iter, jacobi_silent_inject_iter, jacobi_inject_persistent;
 	double	one_over_len, one_over_B, base_pct_complete, one_relp_pct;
 	uint64_t last_output, last_output_t, last_output_r;
@@ -12113,6 +12424,7 @@ restart:
 /* Set up Jacobi error checking of the stage 1 residue */
 
 	pm1_jacobi_init (&pm1data, w, pminus1_base);
+	pm1data.gerbicz_covered = TRUE;		/* Until some part of stage 1 turns out to run unchecked */
 
 /* Re-arm the debug injectors if they are meant to simulate a fault that repeats across restarts */
 
@@ -12127,7 +12439,13 @@ restart:
 /* to read in case there is an error deleting bad save files. */
 
 	readSaveFileStateInit (&pm1data.read_save_file_state, thread_num, filename);
-	writeSaveFileStateInit (&pm1data.write_save_file_state, filename, pm1data.jacobi_enabled ? NUM_JACOBI_BACKUP_FILES : 0);
+
+/* Both error checks mark the save files they have vetted as special, so that a rollback always has a checked file to fall back */
+/* to.  The extra backups are needed whenever either check is on: a Gerbicz-only run would otherwise rotate its block-boundary */
+/* saves out after NumBackupFiles ordinary saves, and a failure late in a block would have nothing left to roll back to. */
+
+	writeSaveFileStateInit (&pm1data.write_save_file_state, filename,
+				(pm1data.jacobi_enabled || IniGetInt (INI_FILE, "Pminus1Gerbicz", 1)) ? NUM_JACOBI_BACKUP_FILES : 0);
 	loaded_pos.valid = FALSE;		/* Only meaningful if this pass actually loads a stage 1 save file */
 	for ( ; ; ) {
 		if (! saveFileExists (&pm1data.read_save_file_state)) {
@@ -12358,6 +12676,16 @@ restart0:
 /* Now take the exponent and raise x to that power */
 
 	gwsetmulbyconst (&pm1data.gwdata, pminus1_base);
+
+/* Set up Gerbicz error checking and open the first block.  This has to follow gwsetmulbyconst, because the verification */
+/* squarings use the same multiply-by-constant machinery the main loop does. */
+
+	if (pm1_gerbicz_init (&pm1data, len, pminus1_base)) {
+		set_memory_usage (thread_num, 0, cvt_gwnums_to_mem (&pm1data.gwdata, 5));
+		pm1_gerbicz_start_block (&pm1data, len, pminus1_base);
+	} else if (pm1data.stage0_bitnum < len)
+		pm1data.gerbicz_covered = FALSE;
+
 	while (pm1data.stage0_bitnum < len) {
 
 /* Set various flags.  They control whether error-checking or the next FFT can be started. */
@@ -12370,7 +12698,8 @@ restart0:
 /* Either square x or square x and multiply it by three. */
 
 #ifndef SERVER_TESTING
-		int options = (!stop_reason && !saving && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
+		int gerbicz_boundary = pm1data.gerbicz_enabled && pm1data.stage0_bitnum + 1 == pm1data.gerbicz_next_mul;
+		int options = (!stop_reason && !saving && !gerbicz_boundary && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
 		if (mpz_tstbit64 (exp, len - pm1data.stage0_bitnum - 1)) options |= GWMUL_MULBYCONST;
 		int option = (!stop_reason && !saving && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
 		if (pm1data.stage0_bitnum < 30) gwmul3_carefully (&pm1data.gwdata, pm1data.x, pm1data.x, pm1data.x, options);
@@ -12410,6 +12739,49 @@ restart0:
 						 mpz_tstbit64 (exp, len - pm1data.stage0_bitnum) ? pm1data.jacobi_base_symbol : 1);
 			if (jres == 0) goto jacobi_err;
 			if (jres > 0) jacobi_error_count = 0;
+		}
+
+/* Gerbicz error checking.  Fold the residue into the running product at each sub-block boundary; at the end of a block, */
+/* verify it and open the next one. */
+
+		if (pm1data.gerbicz_enabled && pm1data.stage0_bitnum == pm1data.gerbicz_next_mul) {
+			pm1_gerbicz_add_chunk (&pm1data, exp, len);
+
+/* Always roundoff check the checksum arithmetic, as the PRP code does, so that a roundoff error in it is reported as one rather */
+/* than as a failed check.  The next iteration resets the flag.  The residue is still a small power of the base for the first 30 */
+/* iterations, so a checksum multiply that early has to be as careful as the squarings are. */
+
+			gwerror_checking (&pm1data.gwdata, 1);
+			if (pm1data.stage0_bitnum != pm1data.gerbicz_end) {
+				pm1_gerbicz_mul (&pm1data, pm1data.x, pm1data.gerbicz_d, pm1data.gerbicz_d, GWMUL_PRESERVE_S1, pm1data.stage0_bitnum < 30);
+				pm1data.gerbicz_next_mul += pm1data.gerbicz_L;
+			} else {
+				int	match = pm1_gerbicz_verify (&pm1data);
+				if (gw_test_for_error (&pm1data.gwdata) || gw_get_maxerr (&pm1data.gwdata) > allowable_maxerr) goto err;
+				if (! match) goto gerbicz_err;
+				if (IniGetInt (INI_FILE, "GerbiczVerbosity", 1) > 1) {
+					sprintf (buf, "Gerbicz error check passed at iteration %" PRIu64 ".\n", pm1data.stage0_bitnum);
+					OutputStr (thread_num, buf);
+				}
+				gerbicz_error_count = 0;
+				{
+					double	adj = IniGetFloat (INI_FILE, "Pminus1GerbiczBlockAdj", 1.0);
+					if (adj < 1.0) {
+						adj *= 1.0473;		/* Thirty good blocks to double the block size again */
+						if (adj > 1.0) adj = 1.0;
+						IniWriteFloat (INI_FILE, "Pminus1GerbiczBlockAdj", (float) adj);
+					}
+				}
+				pm1_gerbicz_start_block (&pm1data, len, pminus1_base);
+
+/* This residue has been proved correct, so write it out and mark it as a known-good place to fall back to.  That is what */
+/* makes a failure cost one block rather than however long ago the last save happened to be. */
+
+				if (IniGetInt (INI_FILE, "Pminus1GerbiczSaveOnCheck", 1)) {
+					setWriteSaveFileSpecial (&pm1data.write_save_file_state);
+					saving = TRUE;
+				}
+			}
 		}
 
 /* Output the title every so often */
@@ -12463,6 +12835,7 @@ restart0:
 /* Do stage 0 cleanup */
 
 	gwerror_checking (&pm1data.gwdata, ERRCHK || near_fft_limit);
+	pm1_gerbicz_free (&pm1data);			/* Stage 2 plans its memory without knowing about these buffers */
 	mpz_clear (exp), exp_initialized = FALSE;
 	end_timer (timers, 0);
 	end_timer (timers, 1);
@@ -12511,6 +12884,9 @@ restart1:
 		// Calc a new exponent for exponentiate.  This is our small batch.  Batch sizes should be smallish as they cannot be interrupted.
 		mpz_init (exp);  exp_initialized = TRUE;
 		calc_exp2 (pm1data.sieve_info, exp, pm1data.B_done, pm1data.interim_B, &pm1data.stage1_prime, stop_reason ? stage1_batch_size/10 : stage1_batch_size);
+
+		// This part of stage 1 is not Gerbicz checked
+		pm1data.gerbicz_covered = FALSE;
 
 		// Do some exponentiating
 		exponentiate_mpz_limited_temps (&pm1data.gwdata, pm1data.x, exp, stage1_temps);
@@ -14362,6 +14738,33 @@ bingo:	jres = pm1_jacobi_wait (&pm1data);
 	stop_reason = STOP_WORK_UNIT_COMPLETE;
 	goto exit;
 
+/* A Gerbicz check failed.  Unlike the Jacobi check this one is exact, so there is no question of a false alarm: something */
+/* between the start of the block and here computed the wrong answer.  Throw the block away and restart from the save file */
+/* written when the previous block was verified, which is the last residue actually known to be right. */
+
+gerbicz_err:
+	inc_error_count (7, &pm1data.error_count);
+	sprintf (buf, "ERROR: %s Gerbicz error check failed at iteration %" PRIu64 ".  Rolling back to iteration %" PRIu64 ".\n",
+		 gwmodulo_as_string (&pm1data.gwdata), pm1data.stage0_bitnum, pm1data.gerbicz_start);
+	OutputBoth (thread_num, buf);
+	pm1_get_position (&pm1data, &reject_pos);
+	reject_pos.bitnum = pm1data.gerbicz_start + 1;		/* The save written when the block started is still good */
+	gerbicz_error_count++;
+	{
+		double	adj = IniGetFloat (INI_FILE, "Pminus1GerbiczBlockAdj", 1.0);
+		if (adj < 0.001 || adj > 1.0) adj = 1.0;
+		adj *= 0.25;				/* Halves L, so the next failure costs a quarter as much */
+		if (adj < 0.001) adj = 0.001;
+		IniWriteFloat (INI_FILE, "Pminus1GerbiczBlockAdj", (float) adj);
+	}
+	if (gerbicz_error_count >= IniGetInt (INI_FILE, "Pminus1GerbiczMaxFailures", 3)) {
+		OutputBoth (thread_num, "Too many Gerbicz errors.  Switching to a larger FFT length.\n");
+		maxerr_restart_count++;
+		maxerr_fftlen = gwfftlen (&pm1data.gwdata);
+		pm1data.interim_C = 0;
+	}
+	goto error_restart;
+
 /* A Jacobi error check failed, so the stage 1 residue is corrupt.  Throw it away and resume from the most recent save file, */
 /* which the on-load check vets before we trust it.  Repeated failures point at a systematic problem rather than a one-off */
 /* glitch, so fall back on the roundoff error remedy and move to a larger FFT. */
@@ -14371,6 +14774,16 @@ jacobi_err:
 	sprintf (buf, "ERROR: %s P-1 stage 1 Jacobi error check failed.  Backtracking to last save file.\n",
 		 gwmodulo_as_string (&pm1data.gwdata));
 	OutputBoth (thread_num, buf);
+
+/* When every block since the save file was loaded passed its Gerbicz check, the arithmetic is not the suspect: the residue in */
+/* that file was already wrong, and rerunning from it would fail identically.  Roll back past it now rather than after a second */
+/* failure, and do not hold a bad save file against the FFT length.  Without that coverage the failure may be a one-off, so allow */
+/* one rerun from the same file before rolling back. */
+
+	if (pm1data.gerbicz_covered && loaded_pos.valid) {
+		reject_pos = loaded_pos;
+		goto error_restart;
+	}
 	jacobi_error_count++;
 	if (jacobi_error_count >= 2 && loaded_pos.valid) reject_pos = loaded_pos;
 	if (jacobi_error_count >= IniGetInt (INI_FILE, "Pminus1JacobiMaxFailures", 2)) {

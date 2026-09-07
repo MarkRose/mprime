@@ -144,6 +144,45 @@ Detecting errors in the stage 1 arithmetic itself needs a Gerbicz check, not a
 Jacobi one.  To disable the Jacobi checks, in prime.txt:
 	Pminus1JacobiErrorCheck=0 or 1	(default is 1)
 
+P-1 stage 1 also runs a Gerbicz error check, which unlike the Jacobi check does
+watch the arithmetic, and is exact rather than probabilistic: one wrong bit
+anywhere in a block makes two independently computed checksums disagree.  It
+costs about 2/L of stage 1, where L is chosen so a block is L*L iterations.  A
+failure discards the block and restarts from the last residue proved correct,
+which is written out and kept as a known-good fallback each time a block passes.
+To disable it, in prime.txt:
+	Pminus1Gerbicz=0 or 1	(default is 1)
+
+The block size aims for a fixed number of checks per run rather than a fixed
+number of iterations, so that the work a failure throws away is always about the
+same share of stage 1 whether that takes two hours or eight days.  The overhead
+is the same on every machine, because the check runs through the same FFT as the
+work it checks, so there is nothing hardware-specific to tune.  In prime.txt:
+	Pminus1GerbiczChecksPerRun=N	(default is 20)
+	Pminus1GerbiczMinL=N	(default is 8; below this the run is too short to bother)
+	Pminus1GerbiczMaxL=N	(default is 3000)
+	Pminus1GerbiczSaveOnCheck=0 or 1	(default is 1)
+
+After a failure the block is quartered, so a machine that is failing loses less
+work each time, and it grows back over about thirty good blocks.  That factor is
+remembered between runs.  After this many consecutive failures the program moves
+to a larger FFT length, as it does for roundoff errors.  In prime.txt:
+	Pminus1GerbiczBlockAdj=F	(default is 1.0, managed by the program)
+	Pminus1GerbiczMaxFailures=N	(default is 3)
+
+Gerbicz checking needs four gwnums beyond the one stage 1 already uses, and
+stage 1 is deliberately frugal so it does not take memory from another worker's
+stage 2.  If that memory is not available the check is skipped with a message and
+stage 1 runs unchecked.  At a 100M-digit exponent the four extra buffers are
+about 576MB.  They are released as soon as stage 1 ends, so stage 2 plans its
+memory without them.
+
+Two more debug settings, both off by default.  The first prints a line at each
+passing check.  The second dumps a block's internal values so they can be
+compared against an independent model.  In prime.txt:
+	GerbiczVerbosity=N	(default is 1; 2 logs every passing check)
+	Pminus1GerbiczDumpBlock=N	(default is 0)
+
 A failed Jacobi check discards the residue and backtracks to the last save file,
 which is itself checked before being trusted.  Repeated failures point at a
 systematic problem rather than a one-off glitch, so after this many the program
@@ -151,6 +190,14 @@ moves to a larger FFT length, the same remedy it uses for roundoff errors.  Fail
 checks, and roundoff errors, are recorded in the result line's error-code field,
 with the same encoding LL and PRP results use.  In prime.txt:
 	Pminus1JacobiMaxFailures=N	(default is 2)
+
+When the Gerbicz check covered every iteration since the save file was loaded, the
+arithmetic is not the suspect: the file itself carried a wrong residue that its
+own check had a 50% chance of missing, and rerunning from it would fail
+identically.  The program then rolls back past it to an older save file straight
+away, and that failure does not count towards Pminus1JacobiMaxFailures.  Without
+that coverage a failure may be a one-off, so the run is retried once from the same
+file before rolling back.
 
 Four debug settings exist for testing the P-1 check itself, all off by default.
 The first runs a check every N stage 0 iterations, far more often than any real
