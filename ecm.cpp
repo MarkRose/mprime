@@ -14430,7 +14430,7 @@ int pfactor (
 {
 	uint64_t bound1, bound2, squarings;
 	double	prob;
-	char	buf[120], testnum[120];
+	char	buf[255], testnum[120];
 	int	stop_reason;
 
 /* Set flag indicating we need to restart if the maximum amount of memory changes (as opposed to currently available memory!) */

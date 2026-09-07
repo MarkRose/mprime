@@ -411,7 +411,7 @@ void SetPriority (
 #endif
 	char	logical_CPU_string[255];
 	char	logical_CPU_substring[255];
-	char	buf[255];
+	char	buf[400];		/* Large enough for a message prefix plus a full logical_CPU_string */
 
 /* Call OS-specific routine to set the priority */
 
@@ -3791,7 +3791,7 @@ void saveFileBad (
 	readSaveFileState *state)
 {
 	char	buf[256];
-	char	filename[256];
+	char	filename[96];		/* base_filename is [80]; leave room for the appended suffix */
 	int	i, maxbad;
 
 /* Print an error message indicating failure to read the save file */
@@ -7189,7 +7189,7 @@ begin:	gwinit (&lldata.gwdata);
 /* Write a save file every INTERIM_FILES iterations. */
 
 		if (interim_file) {
-			char	interimfile[32];
+			char	interimfile[64];	/* filename is [32]; leave room for the appended suffix */
 			writeSaveFileState state;
 			sprintf (interimfile, "%s.%03ld", filename, counter / INTERIM_FILES);
 			writeSaveFileStateInit (&state, interimfile, 0);
@@ -7717,7 +7717,7 @@ int selfTestInternal (
 	llhandle lldata;
 	unsigned long k, limit;
 	unsigned int i, iter;
-	char	buf[256], addl_msg[80];
+	char	buf[400], addl_msg[80];	/* buf must hold a message plus a 200 character FFT description */
 //	char	iniName[32];
 	time_t	start_time, current_time;
 	int	alternate_in_place, in_place, stop_reason;
@@ -8584,7 +8584,7 @@ int primeSieveTest (
 	int	thread_num)
 {
 	fachandle facdata;
-	char	buf[500];
+	char	buf[600];		/* Large enough for a message plus a 480 character factor */
 	FILE	*fd;
 	unsigned long p;
 	int	stop_reason;
@@ -10930,7 +10930,8 @@ int generateProofFile (
 	char	proof_hash[33])		/* Returned MD5 hash of the entire proof file */
 {
 	int	proofgen_waits;
-	char	buf[512], filename[32], proof_filename[500], tmp_proof_filename[504];
+	char	buf[1100];		/* Large enough for a message naming two proof filenames */
+	char	filename[32], proof_filename[500], tmp_proof_filename[504];
 
 // Mihai's explanation for how a proof construction works for proof power N:
 //	Hashes must all be derived from the final residue B
@@ -11029,7 +11030,7 @@ int generateProofFile (
 
 		// Output number.  Enclose non-Mersennes with known factors in parentheses.  Append known factors.
 		char *bigbuf = (char *) buf;
-		if (w->known_factors != NULL) bigbuf = (char *) malloc (512 + strlen (w->known_factors));
+		if (w->known_factors != NULL) bigbuf = (char *) malloc (sizeof (buf) + strlen (w->known_factors));
 		sprintf (bigbuf, "NUMBER=");
 		if ((w->k != 1.0 || w->c != -1) && w->known_factors != NULL) strcat (bigbuf, "(");
 		strcat (bigbuf, gwmodulo_as_string (gwdata));
@@ -13116,7 +13117,7 @@ OutputStr (thread_num, "Iteration failed.\n");
 /* Write a save file every INTERIM_FILES iterations. */
 
 		if (interim_file) {
-			char	interimfile[32];
+			char	interimfile[64];	/* filename is [32]; leave room for the appended suffix */
 			writeSaveFileState state;
 			sprintf (interimfile, "%s.%03ld", filename, ps.counter / INTERIM_FILES);
 			writeSaveFileStateInit (&state, interimfile, 0);

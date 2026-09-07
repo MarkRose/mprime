@@ -1394,7 +1394,7 @@ void nameAndReadIniFiles (
 				if (line[0] == 0) continue;
 				// Locate section headers
 				if (line[0] == '[') {
-					snprintf (section, sizeof (section), "%s", line+1);
+					truncated_strcpy (section, sizeof (section), line+1);
 					if (strchr (section, ']') != NULL) *strchr (section, ']') = 0;
 					continue;
 				}
@@ -2373,7 +2373,7 @@ void OutputStr (
 /* Format a timestamp.  Prefix every line in the input buffer with the timestamp. */
 
 	if (TIMESTAMPING) {
-		char	tmpbuf[200], fmtbuf[202];
+		char	tmpbuf[200], fmtbuf[204];	/* fmtbuf holds tmpbuf wrapped in "[] " */
 
 		timestamp (tmpbuf, 0);
 		sprintf (fmtbuf, "[%s] ", tmpbuf);

@@ -957,7 +957,8 @@ int primenet_parse_page (char *response_buf, short operation, void *pkt)
 
 {
 	char	*s;
-	char	buf[4096], errtxt[4096];
+	char	errtxt[4096];
+	char	buf[sizeof (errtxt) + 2];	/* Large enough to hold errtxt plus a newline */
 	int32_t	res;
 
 /* Get result code, which is always first */
@@ -987,7 +988,6 @@ int primenet_parse_page (char *response_buf, short operation, void *pkt)
 		;  // Fail get cert work silently
 	}
 	else if (res) {
-		char	buf[2000];
 		char	*resmsg;
 
 /* Convert the error number to text */

@@ -292,7 +292,7 @@ void test_it_all (
 	gwnum	x, x2, x3, x4;
 	giant	g, g2, g3;
 	int	i, ii, res, nth_fft, num_squarings;
-	char	buf[256], fft_desc[200];
+	char	buf[400], fft_desc[200];	/* buf must hold a message plus a 200 character FFT description */
 
 /* Init */
 

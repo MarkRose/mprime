@@ -197,7 +197,8 @@ void ProofUpload (char *filename)
 
 	CURLcode res;
 	int	debug;
-	char	url[512], curlbuf[3000], errbuf[CURL_ERROR_SIZE];
+	char	url[700];		/* base_url is [512]; leave room for the appended query parameters */
+	char	curlbuf[3000], errbuf[CURL_ERROR_SIZE];
 
 /* Get debug logging flag */
 
