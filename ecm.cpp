@@ -10337,7 +10337,10 @@ typedef struct {
 	uint64_t first_C_start;	/* First stage 2 starting point (equals B except when worktodo.txt specifies starting point for bound #2). */
 	int	optimal_B2;	/* TRUE if we calculate optimal bound #2 given currently available memory.  FALSE for a fixed bound #2. */
 	uint64_t max_stage0_prime; /* Maximum small prime that can be used in stage 0 exponent calculation. */
-	uint64_t stage0_bitnum;	/* Bit number in stage 0 exponent to process next */
+	uint64_t stage0_bitnum;	/* Bit number in the current exponent chunk to process next */
+	uint64_t chunk_start_prime; /* First prime of the exponent chunk being processed, so the chunk can be rebuilt on a restart */
+	giant	chunk_mult_binary; /* The residue that chunk raises to a power, when resuming part way through one */
+	gwnum	chunk_mult_gw;	/* The same value while a chunk is running, so it can be written to a save file.  Borrowed. */
 	readSaveFileState read_save_file_state;	/* Manage savefile names during reading */
 	writeSaveFileState write_save_file_state; /* Manage savefile names during writing */
 	void	*sieve_info;	/* Prime number sieve */
@@ -10421,21 +10424,24 @@ typedef struct {
 	gwnum	gerbicz_d;		/* Running product of the residue at each sub-block boundary */
 	gwnum	gerbicz_u0;		/* The residue at the start of the block */
 	gwnum	gerbicz_alt;		/* Scratch used to build the second checksum */
-	gwnum	gerbicz_base_pow;	/* base^(2^L), constant for as long as L is */
+	gwnum	gerbicz_base_pow;	/* base^(2^L), constant for as long as L is.  Unused when gerbicz_mult is set. */
+	gwnum	gerbicz_mult;		/* The value each iteration multiplies by, or NULL when that is the small constant base. */
+					/* Borrowed, not owned: it belongs to the exponent chunk being processed. */
 	int	gerbicz_C_initialized;	/* TRUE if gerbicz_C has been initialized */
 	mpz_t	gerbicz_C;		/* Sum of the exponent chunks consumed so far in this block */
 } pm1handle;
 
 /* A point in stage 1.  Used to decide whether a save file is newer than the point a failed error check requires us to restart */
-/* from.  Stage 0 is ordered by its bit number.  The rest of stage 1 is ordered by the prime it has reached, within one pass */
-/* over stage 1, which is identified by the bound that pass started from. */
+/* from.  Stage 0 is ordered by its bit number.  The rest of stage 1 is ordered by the exponent chunk it is in, identified by */
+/* the chunk's first prime, and then by the bit within that chunk, within one pass over stage 1, which is identified by the */
+/* bound that pass started from. */
 
 typedef struct {
 	int	valid;		/* FALSE if no position has been recorded */
 	int	state;		/* PM1_STATE_STAGE0 or PM1_STATE_STAGE1 */
 	uint64_t B_done;	/* Stage 1 bound the pass started from.  Stage 1 only. */
-	uint64_t prime;		/* Prime reached.  Stage 1 only. */
-	uint64_t bitnum;	/* Exponent bit reached.  Stage 0 only. */
+	uint64_t prime;		/* First prime of the exponent chunk reached.  Stage 1 only. */
+	uint64_t bitnum;	/* Exponent bit reached, within the chunk in stage 1 */
 } pm1_position;
 
 /* Record where a restored save file, or the running computation, has got to.  Only stage 1 positions are meaningful. */
@@ -10447,7 +10453,7 @@ void pm1_get_position (
 	pos->valid = (pm1data->state == PM1_STATE_STAGE0 || pm1data->state == PM1_STATE_STAGE1);
 	pos->state = pm1data->state;
 	pos->B_done = pm1data->B_done;
-	pos->prime = pm1data->stage1_prime;
+	pos->prime = pm1data->chunk_start_prime;
 	pos->bitnum = pm1data->stage0_bitnum;
 }
 
@@ -10461,7 +10467,8 @@ int pm1_at_or_after (
 	if (! pos->valid || pm1data->state != pos->state) return (FALSE);
 	if (pos->state == PM1_STATE_STAGE0) return (pm1data->stage0_bitnum >= pos->bitnum);
 	if (pm1data->B_done != pos->B_done) return (FALSE);
-	return (pm1data->stage1_prime >= pos->prime);
+	if (pm1data->chunk_start_prime != pos->prime) return (pm1data->chunk_start_prime > pos->prime);
+	return (pm1data->stage0_bitnum >= pos->bitnum);
 }
 
 /* Jacobi error checking of the P-1 stage 1 residue. */
@@ -10669,6 +10676,7 @@ void pm1_gerbicz_free (
 	if (pm1data->gerbicz_u0 != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_u0), pm1data->gerbicz_u0 = NULL;
 	if (pm1data->gerbicz_alt != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_alt), pm1data->gerbicz_alt = NULL;
 	if (pm1data->gerbicz_base_pow != NULL) gwfree (&pm1data->gwdata, pm1data->gerbicz_base_pow), pm1data->gerbicz_base_pow = NULL;
+	pm1data->gerbicz_mult = NULL;			/* Borrowed pointer; the chunk owns it */
 	if (pm1data->gerbicz_C_initialized) mpz_clear (pm1data->gerbicz_C), pm1data->gerbicz_C_initialized = FALSE;
 	pm1data->gerbicz_enabled = FALSE;
 	pm1data->gerbicz_wanted = FALSE;
@@ -10682,6 +10690,7 @@ void pm1_gerbicz_calc_base_pow (
 {
 	unsigned long j;
 
+	if (pm1data->gerbicz_mult != NULL) return;	/* base^(2^L) only helps when the multiplier is the small constant */
 	dbltogw (&pm1data->gwdata, (double) base, pm1data->gerbicz_base_pow);
 	for (j = 0; j < pm1data->gerbicz_L; j++) {
 		/* The value is tiny to begin with, so square carefully until it has grown, exactly as the stage 0 loop does */
@@ -10694,8 +10703,9 @@ void pm1_gerbicz_calc_base_pow (
 
 int pm1_gerbicz_init (
 	pm1handle *pm1data,
-	unsigned long stage1_iterations,	/* Total iterations the stage 0 loop will run */
-	int	base)				/* The base being exponentiated */
+	unsigned long stage1_iterations,	/* Total iterations this exponent chunk will run */
+	int	base,				/* The base being exponentiated */
+	gwnum	mult)				/* What each iteration multiplies by, or NULL when that is the small constant base */
 {
 	int	checks_wanted;
 	uint64_t block;
@@ -10703,7 +10713,11 @@ int pm1_gerbicz_init (
 	unsigned int needed_mem;
 	char	buf[200];
 
+/* Note the multiplier has to be set after the free, which clears it, and before base^(2^L) is computed, which is skipped */
+/* entirely when the multiplier is a residue. */
+
 	pm1_gerbicz_free (pm1data);
+	pm1data->gerbicz_mult = mult;
 	if (! IniGetInt (INI_FILE, "Pminus1Gerbicz", 1)) return (FALSE);
 
 /* Pick the block size.  Overhead is 2/L whatever the machine, because the check runs through the same FFT path as the work */
@@ -10728,8 +10742,9 @@ int pm1_gerbicz_init (
 	if (L > (unsigned long) IniGetInt (INI_FILE, "Pminus1GerbiczMaxL", 3000)) L = IniGetInt (INI_FILE, "Pminus1GerbiczMaxL", 3000);
 	pm1data->gerbicz_L = L;
 
-/* Four extra gwnums.  Stage 1 is deliberately frugal so it does not take memory from another worker's stage 2, so check */
-/* against what this worker is allowed before committing to them. */
+/* Four extra gwnums in stage 0, three plus the chunk multiplier afterwards, since base^(2^L) is only useful when the */
+/* multiplier is the small constant.  Stage 1 is deliberately frugal so it does not take memory from another worker's stage 2, */
+/* so check against what this worker is allowed before committing to them. */
 
 	needed_mem = (unsigned int) cvt_gwnums_to_mem (&pm1data->gwdata, 5);
 	if (needed_mem > max_mem (pm1data->thread_num)) {
@@ -10742,9 +10757,9 @@ int pm1_gerbicz_init (
 	pm1data->gerbicz_d = gwalloc (&pm1data->gwdata);
 	pm1data->gerbicz_u0 = gwalloc (&pm1data->gwdata);
 	pm1data->gerbicz_alt = gwalloc (&pm1data->gwdata);
-	pm1data->gerbicz_base_pow = gwalloc (&pm1data->gwdata);
+	if (mult == NULL) pm1data->gerbicz_base_pow = gwalloc (&pm1data->gwdata);
 	if (pm1data->gerbicz_d == NULL || pm1data->gerbicz_u0 == NULL ||
-	    pm1data->gerbicz_alt == NULL || pm1data->gerbicz_base_pow == NULL) {
+	    pm1data->gerbicz_alt == NULL || (mult == NULL && pm1data->gerbicz_base_pow == NULL)) {
 		OutputStr (pm1data->thread_num, "Could not allocate Gerbicz buffers.  Stage 1 will run unchecked.\n");
 		pm1_gerbicz_free (pm1data);
 		return (FALSE);
@@ -10814,39 +10829,65 @@ void pm1_gerbicz_add_chunk (
 int pm1_gerbicz_verify (
 	pm1handle *pm1data)
 {
-	unsigned long j, L = pm1data->gerbicz_L, H;
-	mpz_t	Lo, Hz;
+	unsigned long j, L = pm1data->gerbicz_L, H = 0;
+	mpz_t	Lo;
 	int	small_u0, small_pow, match;
 
-/* Decide which values may still be small, non-random numbers.  u_0 is base^(partial exponent), which the stage 0 loop treats */
-/* as small for its first 30 iterations.  base^(2^L) has about 1.6*2^L bits, small for the same range of L. */
+/* Decide which values may still be small, non-random numbers.  With the small constant base as multiplier, u_0 is */
+/* base^(partial exponent), which the stage 0 loop treats as small for its first 30 iterations, and base^(2^L) has about */
+/* 1.6*2^L bits, small for the same range of L.  With a residue as multiplier every value is already random-looking. */
 
-	small_u0 = (pm1data->gerbicz_start < 30);
-	small_pow = (L < 30);
-
-/* Split C into H * 2^L + Lo */
+	small_u0 = (pm1data->gerbicz_mult == NULL && pm1data->gerbicz_start < 30);
+	small_pow = (pm1data->gerbicz_mult == NULL && L < 30);
 
 	mpz_init (Lo);
-	mpz_init (Hz);
-	mpz_fdiv_r_2exp (Lo, pm1data->gerbicz_C, (mp_bitcnt_t) L);
-	mpz_fdiv_q_2exp (Hz, pm1data->gerbicz_C, (mp_bitcnt_t) L);
-	H = mpz_get_ui (Hz);
-	mpz_clear (Hz);
 
-/* alt = u_0 * base^(H * 2^L).  After this u_0's buffer is free, which is what lets four buffers do the work of five. */
+/* Build alt = u_0 * mult^C, where mult is whatever each iteration multiplies by.  Afterwards u_0's buffer is free, which is */
+/* what lets four buffers do the work of five. */
 
-	if (H == 0)
+	if (mpz_sgn (pm1data->gerbicz_C) == 0) {
 		gwcopy (&pm1data->gwdata, pm1data->gerbicz_u0, pm1data->gerbicz_alt);
-	else {
-		unsigned long bit;
-		/* Left-to-right binary exponentiation.  H is below L, so this is at most a dozen operations. */
-		gwcopy (&pm1data->gwdata, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt);
-		for (bit = 1UL << 31; bit > H; bit >>= 1);
-		for (bit >>= 1; bit; bit >>= 1) {
-			pm1_gerbicz_mul (pm1data, pm1data->gerbicz_alt, pm1data->gerbicz_alt, pm1data->gerbicz_alt, 0, small_pow);
-			if (H & bit) pm1_gerbicz_mul (pm1data, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_pow);
+	}
+
+/* When the multiplier is the small constant, C splits as H * 2^L + Lo with H below L, about ten bits.  Lo rides the L */
+/* squarings below at no cost and H is a dozen operations against a precomputed base^(2^L). */
+
+	else if (pm1data->gerbicz_mult == NULL) {
+		mpz_t	Hz;
+		mpz_init (Hz);
+		mpz_fdiv_r_2exp (Lo, pm1data->gerbicz_C, (mp_bitcnt_t) L);
+		mpz_fdiv_q_2exp (Hz, pm1data->gerbicz_C, (mp_bitcnt_t) L);
+		H = mpz_get_ui (Hz);
+		mpz_clear (Hz);
+		if (H == 0)
+			gwcopy (&pm1data->gwdata, pm1data->gerbicz_u0, pm1data->gerbicz_alt);
+		else {
+			unsigned long bit;
+			/* Left-to-right binary exponentiation.  H is below L, so this is at most a dozen operations. */
+			gwcopy (&pm1data->gwdata, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt);
+			for (bit = 1UL << 31; bit > H; bit >>= 1);
+			for (bit >>= 1; bit; bit >>= 1) {
+				pm1_gerbicz_mul (pm1data, pm1data->gerbicz_alt, pm1data->gerbicz_alt, pm1data->gerbicz_alt, 0, small_pow);
+				if (H & bit) pm1_gerbicz_mul (pm1data, pm1data->gerbicz_base_pow, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_pow);
+			}
+			pm1_gerbicz_mul (pm1data, pm1data->gerbicz_u0, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_u0 || small_pow);
 		}
-		pm1_gerbicz_mul (pm1data, pm1data->gerbicz_u0, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1, small_u0 || small_pow);
+	}
+
+/* When the multiplier is a full residue -- every exponent chunk after the first -- none of that applies and the correction */
+/* needs its own exponentiation.  Done in place, most significant bit first, with no temporaries beyond the two buffers we */
+/* already hold.  This is what makes the overhead 3/L there rather than 2/L. */
+
+	else {
+		mp_bitcnt_t i, nbits = mpz_sizeinbase (pm1data->gerbicz_C, 2);
+		gwcopy (&pm1data->gwdata, pm1data->gerbicz_mult, pm1data->gerbicz_alt);
+		for (i = nbits - 1; i-- > 0; ) {
+			gwsquare2 (&pm1data->gwdata, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_STARTNEXTFFT);
+			if (mpz_tstbit (pm1data->gerbicz_C, i))
+				gwmul3 (&pm1data->gwdata, pm1data->gerbicz_mult, pm1data->gerbicz_alt, pm1data->gerbicz_alt,
+					GWMUL_PRESERVE_S1 | GWMUL_STARTNEXTFFT);
+		}
+		gwmul3 (&pm1data->gwdata, pm1data->gerbicz_u0, pm1data->gerbicz_alt, pm1data->gerbicz_alt, GWMUL_PRESERVE_S1);
 	}
 
 /* Build checksum #1 = P * u_L in the buffer u_0 has just vacated.  Both sources have to survive: x carries on the run and d */
@@ -10854,11 +10895,11 @@ int pm1_gerbicz_verify (
 
 	gwmul3 (&pm1data->gwdata, pm1data->x, pm1data->gerbicz_d, pm1data->gerbicz_u0, GWMUL_PRESERVE_S1 | GWMUL_PRESERVE_S2);
 
-/* d = P^(2^L) * base^Lo.  The bits of Lo ride the squarings at no cost. */
+/* d = P^(2^L), carrying the bits of Lo for free when there are any */
 
 	for (j = 0; j < L; j++) {
 		int	options = (j + 1 < L) ? GWMUL_STARTNEXTFFT : 0;
-		if (mpz_tstbit (Lo, (mp_bitcnt_t) (L - 1 - j))) options |= GWMUL_MULBYCONST;
+		if (pm1data->gerbicz_mult == NULL && mpz_tstbit (Lo, (mp_bitcnt_t) (L - 1 - j))) options |= GWMUL_MULBYCONST;
 		gwsquare2 (&pm1data->gwdata, pm1data->gerbicz_d, pm1data->gerbicz_d, options);
 	}
 	mpz_clear (Lo);
@@ -10910,6 +10951,7 @@ void pm1_cleanup (
 /* Free memory */
 
 	free (pm1data->x_binary), pm1data->x_binary = NULL;
+	free (pm1data->chunk_mult_binary), pm1data->chunk_mult_binary = NULL;
 	free (pm1data->invx_binary), pm1data->invx_binary = NULL;
 	free (pm1data->gg_binary), pm1data->gg_binary = NULL;
 	free (pm1data->nQx), pm1data->nQx = NULL;
@@ -10931,6 +10973,7 @@ void pm1_discard_restored (
 	free (pm1data->invx_binary), pm1data->invx_binary = NULL;
 	free (pm1data->gg_binary), pm1data->gg_binary = NULL;
 	free (pm1data->pairmap), pm1data->pairmap = NULL;
+	free (pm1data->chunk_mult_binary), pm1data->chunk_mult_binary = NULL;
 	if (pm1data->x != NULL) gwfree (&pm1data->gwdata, pm1data->x), pm1data->x = NULL;
 }
 
@@ -11034,7 +11077,8 @@ oom:	return (OutOfMemory (pm1data->thread_num));
 //#define PM1_VERSION	6				/* Version 30.8 pre-beta.  Max_stage0_prime and stage0_bitnum stored as uint64_t. */
 //#define PM1_VERSION	7				/* Stage 2 overhaul in 30.8.  Polymult. */
 //#define PM1_VERSION	8				/* 30.10 added required_missing */
-#define PM1_VERSION	9				/* Added the error count, which records Jacobi error check failures */
+#define PM1_VERSION	9				/* Error checking for stage 1: an error count, and a chunk position for the */
+							/* part of stage 1 that is now bitwise rather than a sliding window */
 
 void pm1_save (
 	pm1handle *pm1data)
@@ -11064,9 +11108,31 @@ void pm1_save (
 	}
 
 	else if (pm1data->state == PM1_STATE_STAGE1) {
+		int	have_mult;
 		if (! write_uint64 (fd, pm1data->B_done, &sum)) goto writeerr;
 		if (! write_uint64 (fd, pm1data->interim_B, &sum)) goto writeerr;
 		if (! write_uint64 (fd, pm1data->stage1_prime, &sum)) goto writeerr;
+
+/* Where in the current exponent chunk we are.  The chunk itself is not stored: re-sieving from chunk_start_prime with the */
+/* same bound rebuilds it exactly.  The residue the chunk raises to a power cannot be recomputed cheaply, so part way through */
+/* a chunk it has to be written out.  At a chunk boundary it equals x and is left out. */
+
+		if (! write_uint64 (fd, pm1data->chunk_start_prime, &sum)) goto writeerr;
+		if (! write_uint64 (fd, pm1data->stage0_bitnum, &sum)) goto writeerr;
+
+/* The chunk size bound has to be saved too.  It decides the bit budget calc_exp2 is given, so a resumed run that does not */
+/* have it rebuilds a different chunk -- or, when it is zero, an empty one, which silently skips the rest of stage 1. */
+
+		if (! write_uint64 (fd, pm1data->max_stage0_prime, &sum)) goto writeerr;
+		have_mult = (pm1data->stage0_bitnum != 0 && pm1data->chunk_mult_gw != NULL);
+		if (! write_int (fd, have_mult, &sum)) goto writeerr;
+		if (have_mult) {
+			giant	tmp = allocgiant (((int) pm1data->gwdata.bit_length >> 5) + 10);
+			if (tmp == NULL) goto writeerr;
+			if (gwtogiant (&pm1data->gwdata, pm1data->chunk_mult_gw, tmp)) { free (tmp); goto writeerr; }
+			if (! write_giant (fd, tmp, &sum)) { free (tmp); goto writeerr; }
+			free (tmp);
+		}
 	}
 
 	else if (pm1data->state == PM1_STATE_MIDSTAGE) {
@@ -11287,7 +11353,7 @@ int pm1_restore (			/* For version 30.4 and later save files */
 
 	if (! read_int (fd, &pm1data->state, &sum)) goto readerr;
 
-/* Read the error count.  Save files written before version 9 did not record one. */
+/* Read the error count.  Save files written by 31.07 build 2 and earlier did not record one. */
 
 	if (version >= 9) {
 		uint32_t tmp;
@@ -11320,6 +11386,26 @@ int pm1_restore (			/* For version 30.4 and later save files */
 		if (! read_uint64 (fd, &pm1data->B_done, &sum)) goto readerr;
 		if (! read_uint64 (fd, &pm1data->interim_B, &sum)) goto readerr;
 		if (! read_uint64 (fd, &pm1data->stage1_prime, &sum)) goto readerr;
+
+/* Chunk position.  Files written by 31.07 build 2 and earlier came from the sliding window code, which had no chunks, so */
+/* resuming one means starting a fresh chunk at the first prime it had not yet processed, with x as the multiplier. */
+
+		if (version >= 9) {
+			int	have_mult;
+			if (! read_uint64 (fd, &pm1data->chunk_start_prime, &sum)) goto readerr;
+			if (! read_uint64 (fd, &pm1data->stage0_bitnum, &sum)) goto readerr;
+			if (! read_uint64 (fd, &pm1data->max_stage0_prime, &sum)) goto readerr;
+			if (! read_int (fd, &have_mult, &sum)) goto readerr;
+			if (have_mult) {
+				pm1data->chunk_mult_binary = allocgiant (((int) pm1data->gwdata.bit_length >> 5) + 10);
+				if (pm1data->chunk_mult_binary == NULL) goto readerr;
+				if (! read_giant (fd, pm1data->chunk_mult_binary, &sum)) goto readerr;
+			}
+		} else {
+			pm1data->chunk_start_prime = pm1data->stage1_prime;
+			pm1data->stage0_bitnum = 0;
+		}
+
 		// Some early 30.8 builds set state to PM1_STATE_STAGE1 rather than PM1_STATE_DONE when a factor was found in stage 1.  Correct this.
 		if (pm1data->interim_B < pm1data->B_done) {
 			pm1data->state = PM1_STATE_DONE;
@@ -12251,7 +12337,7 @@ int pminus1 (
 	int	exp_initialized;
 	uint64_t stage0_limit;
 	unsigned int memused;
-	int	i, stage1_batch_size, stage1_mem, stage1_temps;
+	int	i;
 	unsigned long len;
 	int	maxerr_restart_count = 0;
 	unsigned long maxerr_fftlen = 0;
@@ -12260,6 +12346,7 @@ int pminus1 (
 	int	jres, jacobi_error_count = 0;
 	pm1_position loaded_pos, reject_pos;	/* Where the save file we resumed from was, and the point we must not resume past */
 	int	gerbicz_error_count = 0;
+	gwnum	chunk_mult = NULL;		/* Residue an exponent chunk after the first raises to a power */
 	int	jacobi_debug_interval, jacobi_inject_iter, jacobi_silent_inject_iter, jacobi_inject_persistent;
 	double	one_over_len, one_over_B, base_pct_complete, one_relp_pct;
 	uint64_t last_output, last_output_t, last_output_r;
@@ -12493,6 +12580,9 @@ restart:
 				pm1data.jacobi_check_pending = TRUE;
 			} else if (pm1data.state <= PM1_STATE_STAGE2 || pm1data.state == PM1_STATE_DONE) {
 				jres = pm1_jacobi_check (&pm1data, pm1data.x_binary, 1);
+				/* A file written part way through an exponent chunk also carries the residue that chunk raises to a power. */
+				/* It is an even power of the base too, so its symbol must also be 1. */
+				if (jres != 0 && pm1data.chunk_mult_binary != NULL) jres = pm1_jacobi_check (&pm1data, pm1data.chunk_mult_binary, 1);
 				if (jres == 0) {
 					inc_error_count (4, &pm1data.error_count);
 					pm1data.restart_error_count = pm1data.error_count;
@@ -12655,6 +12745,10 @@ restart0:
 	len = (unsigned long) mpz_sizeinbase (exp, 2) - 1;
 	one_over_len = 1.0 / (double) len;
 	if (pm1data.stage1_prime < pm1data.B) one_over_len *= (double) pm1data.stage1_prime / (double) pm1data.B;
+	if (IniGetInt (INI_FILE, "Pminus1TraceChunks", 0)) {
+		sprintf (buf, "DEBUG: stage 0 chunk ends before prime %" PRIu64 ", len=%lu bits\n", pm1data.stage1_prime, len + 1);
+		OutputStr (thread_num, buf);
+	}
 
 /* Now that the exponent is known, run the Jacobi error check a restored stage 0 save file still owes us.  The exponent */
 /* accumulated so far is the top stage0_bitnum+1 bits of exp, so its low bit is bit len-stage0_bitnum. */
@@ -12680,7 +12774,7 @@ restart0:
 /* Set up Gerbicz error checking and open the first block.  This has to follow gwsetmulbyconst, because the verification */
 /* squarings use the same multiply-by-constant machinery the main loop does. */
 
-	if (pm1_gerbicz_init (&pm1data, len, pminus1_base)) {
+	if (pm1_gerbicz_init (&pm1data, len, pminus1_base, NULL)) {
 		set_memory_usage (thread_num, 0, cvt_gwnums_to_mem (&pm1data.gwdata, 5));
 		pm1_gerbicz_start_block (&pm1data, len, pminus1_base);
 	} else if (pm1data.stage0_bitnum < len)
@@ -12840,112 +12934,244 @@ restart0:
 	end_timer (timers, 0);
 	end_timer (timers, 1);
 
-/* Set up sieving tart point for next section */
+/* Hand over to the chunk loop for whatever primes did not fit in stage 0's exponent.  Back up one because calc_exp left */
+/* stage1_prime as the first prime it did not consume, and the chunk loop re-seeds the sieve from chunk_start_prime. */
 
-	pm1data.stage1_prime--;				// Stage1_prime was not included by calc_exp.  Back up one for next sieve call.
+	pm1data.stage1_prime--;
+	pm1data.chunk_start_prime = pm1data.stage1_prime;
+	pm1data.stage0_bitnum = 0;
 
-/* Do the larger primes of stage 1.  This stage uses 2+ transforms per exponent bit using a sliding window exponentiate.  Proceed until interim_B is finished. */
+/* Do the larger primes of stage 1, one bit at a time so the Gerbicz check reaches them too. */
 
 restart1:
 	strcpy (w->stage, "S1");
 	one_over_B = 1.0 / (double) pm1data.B;
-	w->pct_complete = (double) pm1data.stage1_prime * one_over_B;
+	w->pct_complete = (double) pm1data.chunk_start_prime * one_over_B;
 	start_timer (timers, 0);
 	start_timer (timers, 1);
 	pm1data.state = PM1_STATE_STAGE1;
-	stop_reason = start_sieve_with_limit (thread_num, pm1data.stage1_prime, (uint32_t) sqrt((double) pm1data.B), &pm1data.sieve_info);
+
+/* The rest of stage 1: the primes that would not fit in the single exponent stage 0 precomputed.  This is only reached when */
+/* B1 exceeds MaxStage0Prime, which at the default of 250 million means a stage 1 of 360 million iterations, so in practice no */
+/* GIMPS work comes through here at all. */
+/* */
+/* It used to raise x to each batch of primes with a sliding window exponentiate.  That is a little cheaper per exponent bit, */
+/* but it cannot be Gerbicz checked: every step multiplies by a precomputed odd power of the residue the batch started from, so */
+/* the correction term for a block ends up as large as the exponent itself and computing it costs as much as redoing the work. */
+/* Bit at a time costs roughly 20% more here, because the multiplier is a full residue and so needs a real multiply rather than */
+/* something that rides the carry step, and in exchange the whole of stage 1 is checked instead of just the part stage 0 did. */
+/* */
+/* Each chunk raises the residue it starts from, not the base, since base^(E0*E1) is (base^E0)^E1. */
+
+	stop_reason = start_sieve_with_limit (thread_num, pm1data.chunk_start_prime, (uint32_t) sqrt((double) pm1data.B), &pm1data.sieve_info);
 	if (stop_reason) goto exit;
+	pm1data.stage1_prime = sieve (pm1data.sieve_info);
 
-/* Loop doing small batches of primes until interim_B is finished.  The batch size needs to be limited in size as exponentiate is uninterruptible. */
-/* Default batch size is based on FFT length (on my aging Broadwell CPUs I get about 200000 squarings for a single core in 3 seconds on a 4K FFT, */
-/* since exponentiation also does some multiplies I chose 150000 4K FFT squarings as the default).  For efficiency, a minimum batch size of 40 is */
-/* the default (if that's too slow one might should consider different work!).  A default of 40 should give calc_exp2 room to generate a temp that is */
-/* less than 64 bits which exponentiate can handle without any temporaries. */
+/* Chunks get the same memory budget stage 0 gives its exponent */
 
-	stage1_batch_size = (int) ((double) IniGetInt (INI_FILE, "Stage1Batch4KMults", 150000) * pm1data.stage1_threads / (pm1data.gwdata.FFTLEN / 4096.0));
-	if (stage1_batch_size < IniGetInt (INI_FILE, "Stage1BatchSizeMin", 40)) stage1_batch_size = IniGetInt (INI_FILE, "Stage1BatchSizeMin", 40);
+/* A save file from before this existed carries no chunk bound, and a zero bound would give calc_exp2 a zero bit budget, */
+/* which gathers nothing.  Fall back to the setting rather than quietly skipping the rest of stage 1. */
 
-/* Most likely we are working on small exponents where 100MB of memory gives us all the temporaries we could possibly want. */
+	if (pm1data.max_stage0_prime == 0) {
+		pm1data.max_stage0_prime = (uint64_t) IniGetInt (INI_FILE, "MaxStage0Prime", 250);
+		if (pm1data.max_stage0_prime < 1) pm1data.max_stage0_prime = 1;
+		if (pm1data.max_stage0_prime > 2000) pm1data.max_stage0_prime = 2000;
+		pm1data.max_stage0_prime *= 1000000;
+	}
+	stage0_limit = (pm1data.interim_B > pm1data.max_stage0_prime) ? pm1data.max_stage0_prime : pm1data.interim_B;
+	ASSERTG (stage0_limit > 0);
 
-	stage1_mem = IniGetInt (INI_FILE, "Stage1Memory", 100);		// Get amount of memory in MB we are allowed to allocate in stage 1
-	stage1_temps = (int) cvt_mem_to_gwnums (&pm1data.gwdata, stage1_mem);
-	if (stage1_temps > IniGetInt (INI_FILE, "Stage1MaxTemps", 512)) stage1_temps = IniGetInt (INI_FILE, "Stage1MaxTemps", 512);
-	set_memory_usage (thread_num, 0, cvt_gwnums_to_mem (&pm1data.gwdata, stage1_temps));
+/* chunk_mult holds the residue this chunk raises to a power.  A save file written part way through a chunk has to carry it, */
+/* since it is the result of everything before this chunk and cannot be recomputed from anything cheaper. */
 
-	// Loop processing small batches of primes
-	for (pm1data.stage1_prime = sieve (pm1data.sieve_info); pm1data.stage1_prime < pm1data.interim_B; ) {
+	if (chunk_mult == NULL) {
+		chunk_mult = gwalloc (&pm1data.gwdata);
+		if (chunk_mult == NULL) goto oom;
+	}
+	if (pm1data.chunk_mult_binary != NULL) {
+		gianttogw (&pm1data.gwdata, pm1data.chunk_mult_binary, chunk_mult);
+		free (pm1data.chunk_mult_binary), pm1data.chunk_mult_binary = NULL;
+	}
+	pm1data.chunk_mult_gw = chunk_mult;
 
-		// Test for user interrupt, save files, and error checking
-		stop_reason = stopCheck (thread_num);
-		saving = testSaveFilesFlag (thread_num);
-		echk = stop_reason || saving || ERRCHK || near_fft_limit || ((pm1data.stage1_prime & 127) == 127);
-		gwerror_checking (&pm1data.gwdata, echk);
+	for ( ; ; ) {
+		uint64_t chunk_first, chunk_last;
 
-		// Calc a new exponent for exponentiate.  This is our small batch.  Batch sizes should be smallish as they cannot be interrupted.
+/* Build the next chunk of the exponent */
+
+		chunk_first = pm1data.stage1_prime;
+		if (chunk_first > pm1data.interim_B) break;
 		mpz_init (exp);  exp_initialized = TRUE;
-		calc_exp2 (pm1data.sieve_info, exp, pm1data.B_done, pm1data.interim_B, &pm1data.stage1_prime, stop_reason ? stage1_batch_size/10 : stage1_batch_size);
+		calc_exp2 (pm1data.sieve_info, exp, pm1data.B_done, pm1data.interim_B, &pm1data.stage1_prime, stage0_limit * 3 / 2);
+		chunk_last = pm1data.stage1_prime;
+		if (mpz_cmp_ui (exp, 1) <= 0) {
+			mpz_clear (exp), exp_initialized = FALSE;
+			/* An empty chunk is the normal way out when calc_exp2 ran off the end of the range, which happens when no */
+			/* prime power left in it exceeds B_done: every prime up to interim_B was consumed, or a resumed run had */
+			/* already finished.  An empty chunk that made no progress means the chunk could not be built, and carrying */
+			/* on would report a stage 1 that never happened. */
+			if (chunk_last == chunk_first) {
+				sprintf (buf, "ERROR: could not build an exponent chunk at prime %" PRIu64 " with a %" PRIu64 " bit budget.\n",
+					 chunk_first, stage0_limit * 3 / 2);
+				OutputBoth (thread_num, buf);
+				stop_reason = STOP_FATAL_ERROR;
+				goto exit;
+			}
+			break;
+		}
+		len = (unsigned long) mpz_sizeinbase (exp, 2) - 1;
+		one_over_len = 1.0 / (double) len;
+		if (IniGetInt (INI_FILE, "Pminus1TraceChunks", 0)) {
+			giant	tg = popg (&pm1data.gwdata.gdata, ((unsigned long) pm1data.gwdata.bit_length >> 5) + 5);
+			sprintf (buf, "DEBUG: chunk primes [%" PRIu64 ",%" PRIu64 ") len=%lu bits", chunk_first, chunk_last, len + 1);
+			if (tg != NULL) {
+				if (gwtogiant (&pm1data.gwdata, pm1data.x, tg) == 0)
+					sprintf (buf+strlen(buf), " x_at_chunk_start=%08lX%08lX",
+						 (unsigned long) (tg->sign > 1 ? tg->n[1] : 0), (unsigned long) (tg->sign > 0 ? tg->n[0] : 0));
+				pushg (&pm1data.gwdata.gdata, 1);
+			}
+			strcat (buf, "\n");
+			OutputStr (thread_num, buf);
+		}
 
-		// This part of stage 1 is not Gerbicz checked
-		pm1data.gerbicz_covered = FALSE;
+/* A chunk being resumed keeps the multiplier and bit number that came out of the save file.  A fresh one starts here. */
 
-		// Do some exponentiating
-		exponentiate_mpz_limited_temps (&pm1data.gwdata, pm1data.x, exp, stage1_temps);
-		mpz_clear (exp), exp_initialized = FALSE;
+		if (pm1data.stage0_bitnum == 0) {
+			pm1data.chunk_start_prime = chunk_first;
+			gwcopy (&pm1data.gwdata, pm1data.x, chunk_mult);
+		}
+
+/* Gerbicz check this chunk.  Its multiplier is a residue, so the correction needs its own exponentiation and the overhead */
+/* here is 3/L rather than the 2/L stage 0 gets. */
+
+		if (pm1_gerbicz_init (&pm1data, len, pminus1_base, chunk_mult)) {
+			set_memory_usage (thread_num, 0, cvt_gwnums_to_mem (&pm1data.gwdata, 5));
+			pm1_gerbicz_start_block (&pm1data, len, pminus1_base);
+		} else {
+			set_memory_usage (thread_num, 0, cvt_gwnums_to_mem (&pm1data.gwdata, 2));
+			pm1data.gerbicz_covered = FALSE;
+		}
+
+		while (pm1data.stage0_bitnum < len) {
+			int	bit_set, gerbicz_boundary, options;
+
+/* Test for user interrupt, save files, and error checking */
+
+			stop_reason = stopCheck (thread_num);
+			saving = testSaveFilesFlag (thread_num);
+			echk = stop_reason || saving || ERRCHK || near_fft_limit || ((pm1data.stage0_bitnum & 127) == 64);
+			gwerror_checking (&pm1data.gwdata, echk);
+
+/* Square, and multiply by the chunk's residue when this exponent bit is set */
+
+			/* mpz_tstbit64 hands back a masked limb, not a 0/1.  The mask is 64 bits wide, so assigning it straight */
+			/* to an int drops every bit position whose offset within its limb is 32 or more, which silently skips */
+			/* about half the multiplies.  Compare against zero here rather than relying on the conversion. */
+			bit_set = (mpz_tstbit64 (exp, len - pm1data.stage0_bitnum - 1) != 0);
+			gerbicz_boundary = pm1data.gerbicz_enabled && pm1data.stage0_bitnum + 1 == pm1data.gerbicz_next_mul;
+			options = (!stop_reason && !saving && !gerbicz_boundary && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
+			gwsquare2 (&pm1data.gwdata, pm1data.x, pm1data.x, bit_set ? 0 : options);
+			if (bit_set) gwmul3 (&pm1data.gwdata, chunk_mult, pm1data.x, pm1data.x, GWMUL_PRESERVE_S1 | options);
 
 /* Test for an error */
 
-		if (gw_test_for_error (&pm1data.gwdata) || gw_get_maxerr (&pm1data.gwdata) > allowable_maxerr) goto err;
+			if (gw_test_for_error (&pm1data.gwdata) || gw_get_maxerr (&pm1data.gwdata) > allowable_maxerr) goto err;
 
 /* Calculate our stage 1 percentage complete */
 
-		w->pct_complete = (double) pm1data.stage1_prime * one_over_B;
+			pm1data.stage0_bitnum++;
+			w->pct_complete = ((double) chunk_first +
+					   (double) (chunk_last - chunk_first) * (double) pm1data.stage0_bitnum * one_over_len) * one_over_B;
+
+/* Gerbicz error checking, exactly as in stage 0 */
+
+			if (pm1data.gerbicz_enabled && pm1data.stage0_bitnum == pm1data.gerbicz_next_mul) {
+				pm1_gerbicz_add_chunk (&pm1data, exp, len);
+				gwerror_checking (&pm1data.gwdata, 1);		/* Always roundoff check the checksum arithmetic */
+				if (pm1data.stage0_bitnum != pm1data.gerbicz_end) {
+					gwmul3 (&pm1data.gwdata, pm1data.x, pm1data.gerbicz_d, pm1data.gerbicz_d, GWMUL_PRESERVE_S1);
+					pm1data.gerbicz_next_mul += pm1data.gerbicz_L;
+				} else {
+					int	match = pm1_gerbicz_verify (&pm1data);
+					if (gw_test_for_error (&pm1data.gwdata) || gw_get_maxerr (&pm1data.gwdata) > allowable_maxerr) goto err;
+					if (! match) goto gerbicz_err;
+					if (IniGetInt (INI_FILE, "GerbiczVerbosity", 1) > 1) {
+						sprintf (buf, "Gerbicz error check passed at iteration %" PRIu64 ".\n", pm1data.stage0_bitnum);
+						OutputStr (thread_num, buf);
+					}
+					gerbicz_error_count = 0;
+					pm1_gerbicz_start_block (&pm1data, len, pminus1_base);
+					if (IniGetInt (INI_FILE, "Pminus1GerbiczSaveOnCheck", 1)) {
+						setWriteSaveFileSpecial (&pm1data.write_save_file_state);
+						saving = TRUE;
+					}
+				}
+			}
 
 /* Output the title every so often */
 
-		if (first_iter_msg ||
-		    (ITER_OUTPUT != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output_t + 2 * ITER_OUTPUT * title_adjustment)) {
-			sprintf (buf, "%.*f%% of %s P-1 stage 1",
-				 (int) PRECISION, trunc_percent (w->pct_complete), gwmodulo_as_string (&pm1data.gwdata));
-			title (thread_num, buf);
-			last_output_t = gw_get_fft_count (&pm1data.gwdata);
-		}
+			if (first_iter_msg ||
+			    (ITER_OUTPUT != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output_t + 2 * ITER_OUTPUT * title_adjustment)) {
+				sprintf (buf, "%.*f%% of %s P-1 stage 1",
+					 (int) PRECISION, trunc_percent (w->pct_complete), gwmodulo_as_string (&pm1data.gwdata));
+				title (thread_num, buf);
+				last_output_t = gw_get_fft_count (&pm1data.gwdata);
+			}
 
 /* Every N squarings, output a progress report */
 
-		if (first_iter_msg ||
-		    (ITER_OUTPUT != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output + 2 * ITER_OUTPUT * output_adjustment)) {
-			sprintf (buf, "%s stage 1 is %.*f%% complete.",
-				 gwmodulo_as_string (&pm1data.gwdata), (int) PRECISION, trunc_percent (w->pct_complete));
-			end_timer (timers, 0);
-			if (first_iter_msg) {
-				strcat (buf, "\n");
-			} else {
-				strcat (buf, " Time: ");
-				print_timer (timers, 0, buf, TIMER_NL);
+			if (first_iter_msg ||
+			    (ITER_OUTPUT != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output + 2 * ITER_OUTPUT * output_adjustment)) {
+				sprintf (buf, "%s stage 1 is %.*f%% complete.",
+					 gwmodulo_as_string (&pm1data.gwdata), (int) PRECISION, trunc_percent (w->pct_complete));
+				end_timer (timers, 0);
+				if (first_iter_msg) {
+					strcat (buf, "\n");
+				} else {
+					strcat (buf, " Time: ");
+					print_timer (timers, 0, buf, TIMER_NL);
+				}
+				OutputStr (thread_num, buf);
+				start_timer_from_zero (timers, 0);
+				last_output = gw_get_fft_count (&pm1data.gwdata);
+				first_iter_msg = FALSE;
 			}
-			OutputStr (thread_num, buf);
-			start_timer_from_zero (timers, 0);
-			last_output = gw_get_fft_count (&pm1data.gwdata);
-			first_iter_msg = FALSE;
-		}
 
 /* Every N squarings, output a progress report to the results file */
 
-		if ((ITER_OUTPUT_RES != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output_r + 2 * ITER_OUTPUT_RES) ||
-		    (NO_GUI && stop_reason)) {
-			sprintf (buf, "%s stage 1 is %.*f%% complete.\n",
-				 gwmodulo_as_string (&pm1data.gwdata), (int) PRECISION, trunc_percent (w->pct_complete));
-			writeResults (buf);
-			last_output_r = gw_get_fft_count (&pm1data.gwdata);
-		}
+			if ((ITER_OUTPUT_RES != 999999999 && gw_get_fft_count (&pm1data.gwdata) >= last_output_r + 2 * ITER_OUTPUT_RES) ||
+			    (NO_GUI && stop_reason)) {
+				sprintf (buf, "%s stage 1 is %.*f%% complete.\n",
+					 gwmodulo_as_string (&pm1data.gwdata), (int) PRECISION, trunc_percent (w->pct_complete));
+				writeResults (buf);
+				last_output_r = gw_get_fft_count (&pm1data.gwdata);
+			}
 
 /* Check for escape and/or if its time to write a save file */
 
-		if (stop_reason || saving) {
-			pm1_save (&pm1data);
-			if (stop_reason) goto exit;
+			if (stop_reason || saving) {
+				pm1_save (&pm1data);
+				if (stop_reason) goto exit;
+			}
 		}
+
+/* This chunk is finished.  The next one starts from the residue this one produced. */
+
+		mpz_clear (exp), exp_initialized = FALSE;
+		pm1data.stage0_bitnum = 0;
+		pm1data.gerbicz_mult = NULL;
+		pm1data.gerbicz_enabled = FALSE;
 	}
+	pm1data.gerbicz_mult = NULL;
+	pm1data.chunk_mult_gw = NULL;
+	if (chunk_mult != NULL) gwfree (&pm1data.gwdata, chunk_mult), chunk_mult = NULL;
+
+/* Release the Gerbicz buffers: stage 2 plans its memory without knowing about them.  Leave the chunk position past the end of */
+/* the range, so that a save file written from here on (during the GCD, say) resumes with nothing left to do rather than at the */
+/* start of the last chunk. */
+
+	pm1_gerbicz_free (&pm1data);
+	pm1data.chunk_start_prime = pm1data.stage1_prime;
 	pm1data.B_done = pm1data.interim_B;
 	end_timer (timers, 0);
 
@@ -12961,7 +13187,9 @@ more_B:		if (pm1data.x_binary != NULL) {			// pm1_restore can return x as binary
 		}
 		pm1data.interim_B = pm1data.B;
 		pm1data.stage1_prime = 1;
-		//GW - pct_complete resets to 0 because of setting stage1_prime to 2
+		pm1data.chunk_start_prime = 2;		/* calc_exp2 skips prime powers at or below B_done, so start the sieve over */
+		pm1data.stage0_bitnum = 0;
+		free (pm1data.chunk_mult_binary), pm1data.chunk_mult_binary = NULL;
 		goto restart1;
 	}
 	pm1data.C_done = pm1data.B;
@@ -12969,6 +13197,21 @@ more_B:		if (pm1data.x_binary != NULL) {			// pm1_restore can return x as binary
 /* Make sure end result is not in FFTed state */
 
 	gwunfft (&pm1data.gwdata, pm1data.x, pm1data.x);
+
+/* Debug hook: report the stage 1 residue.  Off by default.  Used to prove that splitting the exponent into chunks computes */
+/* the same thing as doing it in one, since the two take completely different paths through the loop. */
+
+	if (IniGetInt (INI_FILE, "Pminus1DumpStage1Res", 0)) {
+		giant	g = popg (&pm1data.gwdata.gdata, ((unsigned long) pm1data.gwdata.bit_length >> 5) + 5);
+		if (g != NULL) {
+			if (gwtogiant (&pm1data.gwdata, pm1data.x, g) == 0) {
+				sprintf (buf, "DEBUG: stage 1 residue res64=%08lX%08lX\n",
+					 (unsigned long) (g->sign > 1 ? g->n[1] : 0), (unsigned long) (g->sign > 0 ? g->n[0] : 0));
+				OutputStr (thread_num, buf);
+			}
+			pushg (&pm1data.gwdata.gdata, 1);
+		}
+	}
 
 /* Stage 1 complete, print a message */
 
@@ -14815,6 +15058,7 @@ error_restart:
 	Dmultiple_map.clear ();
 	relp_set_map.clear ();
 	pm1_cleanup (&pm1data);
+	chunk_mult = NULL;				/* gwdone just freed it along with every other gwnum */
 	free (factor), factor = NULL;
 	free (str), str = NULL;
 	free (msg), msg = NULL;

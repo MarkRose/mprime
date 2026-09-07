@@ -183,6 +183,26 @@ compared against an independent model.  In prime.txt:
 	GerbiczVerbosity=N	(default is 1; 2 logs every passing check)
 	Pminus1GerbiczDumpBlock=N	(default is 0)
 
+The whole of stage 1 is checked, not just the part that fits in one exponent.
+Stage 1 raises the base to the product of the prime powers up to B1, and that
+exponent is built in chunks whose size MaxStage0Prime bounds.  The first chunk
+exponentiates the small base, where the multiply is free because it rides the
+carry step.  Later chunks raise the residue they start from, since base^(E0*E1)
+is (base^E0)^E1, so their multiply is a real one and they run roughly 20% slower
+per exponent bit.  They used to be done with a sliding window exponentiate,
+which was a little faster still but could not be checked at all.  With
+MaxStage0Prime at its default of 250 no B1 anyone runs reaches the second chunk,
+so in practice this costs nothing and only matters to someone using a very large
+B1.  Raising MaxStage0Prime keeps more of stage 1 in the faster first chunk at
+the cost of memory for the exponent, roughly 1.5 bits per unit of B1.
+
+Two debug settings for the chunking, both off by default.  The first logs each
+chunk's prime range and size.  The second logs the stage 1 residue, which is
+what proves a chunked run computes the same thing as an unchunked one.  In
+prime.txt:
+	Pminus1TraceChunks=0 or 1	(default is 0)
+	Pminus1DumpStage1Res=0 or 1	(default is 0)
+
 A failed Jacobi check discards the residue and backtracks to the last save file,
 which is itself checked before being trusted.  Repeated failures point at a
 systematic problem rather than a one-off glitch, so after this many the program
