@@ -3102,7 +3102,8 @@ void normalize_pool_term (
 	}
 
 	free (ecmdata->pool_values); ecmdata->pool_values = NULL;
-	if (!ecmdata->use_preallocated_norm_temps) gwfree (&ecmdata->gwdata, ecmdata->pool_modinv_value); ecmdata->pool_modinv_value = NULL;
+	if (!ecmdata->use_preallocated_norm_temps) gwfree (&ecmdata->gwdata, ecmdata->pool_modinv_value);
+	ecmdata->pool_modinv_value = NULL;
 	ecmdata->pool_count = 0;
 	ecmdata->poolz_count = 0;
 }
@@ -7739,7 +7740,7 @@ skip_stage_2:	start_timer_from_zero (timers, 0);
 			msg = buf + strlen (buf);
 			leadingzeroes = 1; /* Still eat leading zeroes? */
 			for (i = 0; i < ecmdata.N->sign * 8; i++) {
-				char nibble = ( ecmdata.N->n[ecmdata.N->sign - 1 - i/8] >> ((7-i%8)*4)) & 0xF;
+				unsigned int nibble = ( ecmdata.N->n[ecmdata.N->sign - 1 - i/8] >> ((7-i%8)*4)) & 0xF;
 				if (nibble != 0) leadingzeroes = 0;
 				if (!leadingzeroes) *msg++ = hex[nibble];
 			}
@@ -7747,7 +7748,7 @@ skip_stage_2:	start_timer_from_zero (timers, 0);
 			msg = msg + strlen (msg);
 			leadingzeroes = 1;
 			for (i = 0; i < gx->sign * 8; i++) {
-				char nibble = ( gx->n[gx->sign - 1 - i/8] >> ((7-i%8)*4)) & 0xF;
+				unsigned int nibble = ( gx->n[gx->sign - 1 - i/8] >> ((7-i%8)*4)) & 0xF;
 				if (nibble != 0) leadingzeroes = 0;
 				if (!leadingzeroes) *msg++ = hex[nibble];
 			}
@@ -9711,7 +9712,7 @@ start_timer_from_zero (timers, 0);
 				a[0].fmavec = NULL;
 				a[0].circular_size = poly1_size + poly2_size;	// Poly result modulo (X^circular_size - 1)
 				a[0].first_mulmid = 0;
-				a[0].options = (poly2_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) + POLYMULT_INVEC2_MONIC | POLYMULT_CIRCULAR | POLYMULT_MULHI;
+				a[0].options = ((poly2_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) + POLYMULT_INVEC2_MONIC) | POLYMULT_CIRCULAR | POLYMULT_MULHI;
 
 				// Right half of pair times saved left F(X)
 				a[1].invec2 = &polyF[poly1_base];		// Second input poly
@@ -9721,7 +9722,7 @@ start_timer_from_zero (timers, 0);
 				a[1].fmavec = NULL;
 				a[1].circular_size = poly1_size + poly2_size;	// Poly result modulo (X^circular_size - 1)
 				a[1].first_mulmid = 0;
-				a[1].options = (poly1_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) + POLYMULT_INVEC2_MONIC | POLYMULT_CIRCULAR | POLYMULT_MULHI;
+				a[1].options = ((poly1_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) + POLYMULT_INVEC2_MONIC) | POLYMULT_CIRCULAR | POLYMULT_MULHI;
 
 				void **plan_addr = (poly1_size == poly2_size) ? &plan1 : (poly1_size < poly2_size) ? &plan2 : &plan3;
 				int options = POLYMULT_NO_UNFFT | POLYMULT_SAVE_PLAN;
@@ -13285,9 +13286,9 @@ pm1_polymult:
 				int poly2_size = (i+1 < num_polys-1) ? poly_size : last_poly_size;
 				polymult (&pm1data.polydata, &poly1[i*poly_size], poly_size, &poly1[(i+1)*poly_size], poly2_size,
 					  &poly1[i*poly_size], poly_size + poly2_size,
-					  (poly_size == 1 ? POLYMULT_INVEC1_NEGATE : 0) +
-					  (poly2_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) +
-					  POLYMULT_INVEC1_MONIC_RLP | POLYMULT_INVEC2_MONIC_RLP | POLYMULT_NO_UNFFT);
+					  ((poly_size == 1 ? POLYMULT_INVEC1_NEGATE : 0) +
+					   (poly2_size == 1 ? POLYMULT_INVEC2_NEGATE : 0) +
+					   POLYMULT_INVEC1_MONIC_RLP) | POLYMULT_INVEC2_MONIC_RLP | POLYMULT_NO_UNFFT);
 			}
 			// Multithreaded unfft poly coefficients
 			poly_unfft_fft_coefficients (&pm1data.polydata, poly1, pm1data.poly1_size);
