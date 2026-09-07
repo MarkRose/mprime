@@ -2014,7 +2014,6 @@ static	int	worktodo_add_disabled = FALSE;
 	tnum = 0;
 	while (fgets (line, sizeof (line), fd)) {
 		struct work_unit *w;
-		int	rc;
 
 /* Remove trailing CRLFs */
 

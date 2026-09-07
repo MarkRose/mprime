@@ -7398,7 +7398,7 @@ restart0:
 /* Choose curve with order divisible by 16 and choose a point (x/z) on said curve. */
 
 	do {
-		uint32_t hi, lo;
+		uint32_t hi = 0, lo = 0;	// Left at zero on the (impossible on x86-64) CPU with no RDTSC
 		ecmdata.sigma = ((uint64_t) (rand () & 0x1F)) << 48;
 		ecmdata.sigma += ((uint64_t) (rand () & 0xFFFF)) << 32;
 		if (CPU_FLAGS & CPU_RDTSC) rdtsc (&hi, &lo);
