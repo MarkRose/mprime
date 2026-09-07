@@ -821,6 +821,7 @@ int fill_pairmap (			/* Generate a pairing map */
 		cpt_links = (int) (capacity * (double) totrels / (double) numrels * est_cpt_density);
 	}
 	if (ALT_D) cpt_links *= 2;
+	(void) cpt_links;			// Only read when ON_THE_FLY_CAN_PAIR_TO is undefined
 
 	prime_window primes(capacity);			// For each prime in the "pairing window", maintain data for prime pairing
 	prime_map primes_map(window_size);		// Create a map for quick lookup of primes in the prime window
@@ -1434,6 +1435,7 @@ if (FIRST_EXIT && WINDOWED && next_prime != 0 && p_best_pairing != NULL) break;
 	// Perform a few final checks.  But first adjust for relocatables that we hoped to pair but did not.
 	pgen.validate_adjust (relps);
 	ASSERTG (pgen.get_numprimes () == tot_pairs * 2 + tot_singles);
+	(void) tot_singles, (void) reloc_singles;	// Only read by ASSERTG and the debugging code below
 	pgen.validate_final ();
 
 /* Output an informational message on our pairing efficiency */

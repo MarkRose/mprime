@@ -521,7 +521,7 @@ void test_it (
 	int	thread_num,		/* Worker number */
 	gwhandle *gwdata)
 {
-	gwnum	x, x2, x3, x4, x5;
+	gwnum	x, x2, x3, x4;
 	giant	g, g2, g3, g4;
 	int	i, num_squarings, num_inverses, stop_reason;
 	char	buf[200];
@@ -541,7 +541,6 @@ void test_it (
 	x2 = gwalloc (gwdata);
 	x3 = gwalloc (gwdata);
 	x4 = gwalloc (gwdata);
-	x5 = gwalloc (gwdata);
 	g = popg (&gwdata->gdata, ((unsigned long) gwdata->bit_length >> 4) + 20);
 	g2 = popg (&gwdata->gdata, ((unsigned long) gwdata->bit_length >> 4) + 20);
 	g3 = popg (&gwdata->gdata, ((unsigned long) gwdata->bit_length >> 4) + 20);

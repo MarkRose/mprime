@@ -46,7 +46,6 @@ unsigned long get_number (
 	unsigned long dflt)
 {
 	char	line[80];
-	unsigned long i;
 	get_line (line);
 	if (line[0] == 0) return (dflt);
 	return (atol (line));
@@ -57,7 +56,6 @@ unsigned long get_number_or_quit (
 	unsigned long quit_value)
 {
 	char	line[80];
-	unsigned long i;
 	get_line (line);
 	if (line[0] == 0) return (dflt);
 	if (_stricmp (line, "q") == 0 || _stricmp (line, "quit") == 0) return (quit_value);
@@ -729,7 +727,7 @@ void advanced_time (void)
 
 void advanced_pminus1 (void)
 {
-	unsigned long m_thread, m_b, m_n, m_num_curves;
+	unsigned long m_thread, m_b, m_n;
 	long	m_c;
 	double	m_k;
 	uint64_t m_bound1, m_bound2;
@@ -1326,10 +1324,6 @@ void help_about (void)
 
 void help_about_server (void)
 {
-	char	*buildId;
-	char	*serverName;
-	char	*adminEmailAddr;
-
 	pingServer ();
 }
 

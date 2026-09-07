@@ -306,7 +306,7 @@ void setOsThreadPriority (
 		       0);
 #endif
 #ifdef __linux__
-	int	linux_priority, errcode;
+	int	linux_priority;
 	pid_t	thread_id;
 
 /* I couldn't get the standard syscall0 declaration of gettid to */
@@ -319,7 +319,7 @@ void setOsThreadPriority (
 /* 0 (linux's normal priority). */
 
 	linux_priority = (8 - (int) priority) * 19 / 7;
-	errcode = setpriority (PRIO_PROCESS, thread_id, linux_priority);
+	(void) setpriority (PRIO_PROCESS, thread_id, linux_priority);
 #endif
 
 #if defined (__APPLE__) || defined (__FreeBSD__)
@@ -394,7 +394,6 @@ int LoadPrimeNet (void)
 	/* 99:	Default.  Use case 2 above but if cannot open /proc/net/route*/
 	/*	then assume you are connected (we probably do not have read */
 	/*	permission or this is a funny Linux setup). */
-	int	lines = 0;
 	FILE	*fd;
 	char	buffer[4096];
 	int	RtReq = IniSectionGetInt (INI_FILE, SEC_PrimeNet, "RouteRequired", 99);

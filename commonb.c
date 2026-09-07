@@ -8167,7 +8167,7 @@ int tortureTest (
 	int	data_index[500];	/* Last exponent tested for each FFT length */
 	int	test_time, disabled_cpu_flags;
 	int	tests_completed, self_test_errors, self_test_warnings;
-	int	i, run_indefinitely, stop_reason;
+	int	i, stop_reason;
 	unsigned long fftlen, min_fft, max_fft, max_small_fftlen;
 	time_t	start_time;
 	unsigned int memory;		/* Memory this worker can use during torture test */
@@ -8221,11 +8221,9 @@ int tortureTest (
 /* each FFT length.  If we ever decide to resupport this option, add */
 /* a run_indefinitely argument and change the output message below. */
 
-loop:	run_indefinitely = TRUE;
-
 /* Output a torture test starting message */
 
-	OutputStr (thread_num, TORTURE1);
+loop:	OutputStr (thread_num, TORTURE1);
 	OutputStr (thread_num, TORTURE2);
 
 /* Determine fft lengths we should run and allocate a big block of memory to test. */
@@ -9213,7 +9211,7 @@ int factorBench (
 	double	best_time;
 	char	buf[512];
 	int	bit_lengths[] = {61, 62, 63, 64, 65, 66, 67, 75, 76, 77};
-	int	res, stop_reason;
+	int	stop_reason;
 	double	timers[2];
 
 /* Keep the other CPU cores busy.  This should prevent "turbo boost" from kicking in. */
@@ -9263,7 +9261,7 @@ int factorBench (
 
 /* Do one "iteration" untimed, to prime the caches. */
 
-		res = factorChunk (&facdata);
+		(void) factorChunk (&facdata);
 		(void) factorChunksProcessed (&facdata);
 
 /* Time 10 iterations. Take best time. */
@@ -9279,7 +9277,7 @@ int factorBench (
 			}
 			clear_timers (timers, sizeof (timers) / sizeof (timers[0]));
 			start_timer (timers, 0);
-			res = factorChunk (&facdata);
+			(void) factorChunk (&facdata);
 			end_timer (timers, 0);
 			if (j == 0 || timers[0] < best_time) best_time = timers[0] / factorChunksProcessed (&facdata);
 		}

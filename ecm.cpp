@@ -12039,7 +12039,6 @@ restart0:
 #ifndef SERVER_TESTING
 		int options = (!stop_reason && !saving && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
 		if (mpz_tstbit64 (exp, len - pm1data.stage0_bitnum - 1)) options |= GWMUL_MULBYCONST;
-		int option = (!stop_reason && !saving && pm1data.stage0_bitnum+1 != len) ? GWMUL_STARTNEXTFFT : 0;
 		if (pm1data.stage0_bitnum < 30) gwmul3_carefully (&pm1data.gwdata, pm1data.x, pm1data.x, pm1data.x, options);
 		else gwsquare2 (&pm1data.gwdata, pm1data.x, pm1data.x, options);
 #endif
