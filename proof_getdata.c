@@ -81,13 +81,13 @@ int ProofGetData (char *aid, void *pbuf, int bufsize, char *md5)
 
 		curl = curl_easy_init ();
 		if (curl == NULL) return (PRIMENET_ERROR_CURL_INIT);
-		curl_easy_setopt (curl, CURLOPT_NOPROGRESS, 1);
+		curl_easy_setopt (curl, CURLOPT_NOPROGRESS, 1L);
 
 /* Give curl library the HTTP string to send */
 
 		sprintf (url, "http://www.mersenne.org/proof_get_data/?aid=%s", aid);
 		curl_easy_setopt (curl, CURLOPT_URL, url);
-		curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, FALSE);
+		curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, 0L);
 		if (debug) {
 			sprintf (buf, "URL: %s\n", url);
 			LogMsg (buf);
@@ -130,15 +130,15 @@ int ProofGetData (char *aid, void *pbuf, int bufsize, char *md5)
 			curl_easy_setopt (curl, CURLOPT_DEBUGFUNCTION, curl_trace);
 			curl_easy_setopt (curl, CURLOPT_DEBUGDATA, NULL);
 			/* the DEBUGFUNCTION has no effect until we enable VERBOSE */
-			curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+			curl_easy_setopt (curl, CURLOPT_VERBOSE, 1L);
 		}
 
 /* Send the URL request */
 
-		curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1);
-		curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1);
-		curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180);
-		curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180);
+		curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1L);
+		curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180L);
+		curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180L);
 		curl_easy_setopt (curl, CURLOPT_ERRORBUFFER, errbuf);
 		res = curl_easy_perform (curl);
 		if (res != CURLE_OK) {

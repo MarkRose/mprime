@@ -211,13 +211,13 @@ void ProofUpload (char *filename)
 		OutputStr (COMM_THREAD_NUM, "curl_easy_init failed\n");
 		goto end;
 	}
-	curl_easy_setopt (curl, CURLOPT_NOPROGRESS, 1);
+	curl_easy_setopt (curl, CURLOPT_NOPROGRESS, 1L);
 
 /* Give curl library the HTTP string to send */
 
 	sprintf (url, "http://www.mersenne.org/proof_upload/?UserID=%s&Exponent=%d&FileSize=%" PRIu64 "&FileMD5=%s", USERID, exponent, filesize, fileMD5);
 	curl_easy_setopt (curl, CURLOPT_URL, url);
-	curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, FALSE);
+	curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	if (debug) {
 		sprintf (buf, "URL: %s\n", url);
 		LogMsg (buf);
@@ -238,15 +238,15 @@ void ProofUpload (char *filename)
 	if (debug >= 2) {
 		curl_easy_setopt (curl, CURLOPT_DEBUGFUNCTION, curl_trace);
 		curl_easy_setopt (curl, CURLOPT_DEBUGDATA, NULL);
-		curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+		curl_easy_setopt (curl, CURLOPT_VERBOSE, 1L);
 	}
 
 /* Send the URL request */
 
-	curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1);
-	curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1);
-	curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180);
-	curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180);
+	curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180L);
+	curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180L);
 	curl_easy_setopt (curl, CURLOPT_ERRORBUFFER, errbuf);
 	res = curl_easy_perform (curl);
 	if (res != CURLE_OK) {
@@ -369,7 +369,7 @@ void ProofUpload (char *filename)
 		// Create the upload chunk URL
 		snprintf (url, sizeof (url), "%s&FileMD5=%s&DataOffset=%" PRIu64 "&DataSize=%d&DataMD5=%s", base_url, fileMD5, chunk_start, datasize, chunkMD5);
 		curl_easy_setopt (curl, CURLOPT_URL, url);
-		curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, FALSE);
+		curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, 0L);
 		if (debug) {
 			sprintf (buf, "URL: %s\n", url);
 			LogMsg (buf);
@@ -401,15 +401,15 @@ void ProofUpload (char *filename)
 		if (debug >= 2) {
 			curl_easy_setopt (curl, CURLOPT_DEBUGFUNCTION, curl_trace);
 			curl_easy_setopt (curl, CURLOPT_DEBUGDATA, NULL);
-			curl_easy_setopt (curl, CURLOPT_VERBOSE, 1);
+			curl_easy_setopt (curl, CURLOPT_VERBOSE, 1L);
 		}
 
 /* Send the URL request */
 
-		curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1);
-		curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1);
-		curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180);
-		curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180);
+		curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1L);
+		curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT, 180L);
+		curl_easy_setopt (curl, CURLOPT_TIMEOUT, 180L);
 		curl_easy_setopt (curl, CURLOPT_ERRORBUFFER, errbuf);
 		res = curl_easy_perform (curl);
 		if (res != CURLE_OK) {
