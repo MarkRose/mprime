@@ -1073,6 +1073,7 @@ int pair_window_size (
 	double	bit_length,
 	int16_t	*relp_sets)
 {
+	(void) bit_length, (void) relp_sets;	// Unused now that we always use windowed pairing, see the commented out code below
 //	bool acceptable_multiplier = (relp_sets[0] <= IniGetInt (INI_FILE, "MaxPairingWindowMultiplier", 8));
 //	bool windowed = (!acceptable_multiplier || bit_length < IniGetInt (INI_FILE, "MaxPairingWindowExponent", 80000000));
 //	return (windowed ? IniGetInt (INI_FILE, "PairingWindowSize", 1000) : 0);
@@ -1672,6 +1673,7 @@ void ws_check (
 	ecmhandle *ecmdata,
 	struct ws *in)
 {
+	(void) ecmdata, (void) in;		// Only used in a GDEBUG build
 #ifdef GDEBUG
 	gwnum	t0, t1, t2;
 	int	a = -8;

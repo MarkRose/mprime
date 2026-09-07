@@ -21,6 +21,7 @@ int	activity_is_set = FALSE;
 void PreLaunchCallback (
 	int	launch_type)
 {
+	(void) launch_type;
 #ifdef __APPLE__
 #ifndef COMMAND_LINE_MPRIME
 	if (DEFEAT_POWER_SAVE) {
@@ -38,6 +39,7 @@ void PreLaunchCallback (
 void PostLaunchCallback (
 	int	launch_type)
 {
+	(void) launch_type;
 #ifdef __APPLE__
 #ifndef COMMAND_LINE_MPRIME
 	if (activity_is_set) {
@@ -55,6 +57,7 @@ void PostLaunchCallback (
 void stopCheckCallback (
 	int	thread_num)
 {
+	(void) thread_num;
 }
 
 /* Routine to get the current load average */

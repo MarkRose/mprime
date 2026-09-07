@@ -463,18 +463,21 @@ usage:	printf ("Usage: mprime [-bcdhmstv] [-aN] [-wDIR] [-pPIDFILE]\n");
 void create_window (
 	int	thread_num)
 {
+	(void) thread_num;
 }
 
 /* Set the title prefix for this MDI window - only called once */
 
 void base_title (int thread_num, const char *str)
 {
+	(void) thread_num, (void) str;
 }
 
 /* Put a title on the MDI window */
 
 void title (int thread_num, const char *msg)
 {
+	(void) thread_num, (void) msg;
 }
 
 void flashWindowAndBeep (void)
@@ -507,10 +510,12 @@ static	int	last_char_out_was_newline = TRUE;
 
 void BlinkIcon (int thread_num, int x)
 {
+	(void) thread_num, (void) x;
 }
 
 void ChangeIcon (int thread_num, int x)
 {
+	(void) thread_num, (void) x;
 }
 
 

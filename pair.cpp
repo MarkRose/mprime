@@ -358,10 +358,10 @@ public:
 	}
 	void validate_final () {ASSERTG (validation_map.size() == 0);}
 #else
-	void validate_insert (uint64_t p) {}
-	void validate_prime (uint64_t p, uint64_t base_prime) {}
-	void validate_pairing (uint64_t p1, uint64_t p2, int D, int ALT_D, int ALT_D_OFFSET, uint64_t B2_start, uint64_t B2_end, std::vector<int> &relps) {}
-	void validate_adjust (std::vector<int> &relps) {}
+	void validate_insert (uint64_t) {}
+	void validate_prime (uint64_t, uint64_t) {}
+	void validate_pairing (uint64_t, uint64_t, int, int, int, uint64_t, uint64_t, std::vector<int> &) {}
+	void validate_adjust (std::vector<int> &) {}
 	void validate_final () {}
 #endif
 
@@ -539,6 +539,7 @@ void output_pair (
 	uint64_t  Dblock;
 	int	relp;
 	ASSERTG (ALT_D == 0);  // Not supported yet
+	(void) ALT_D, (void) ALT_D_OFFSET;	// Only ASSERTG uses ALT_D, and an alternate D is not supported yet
 	Dblock = (p1 + p2) / 2;
 	relp = abs ((int) (p1 - Dblock));
 	Dblock = (Dblock - (B2_start + D / 2)) / D;
@@ -577,6 +578,7 @@ int fill_pairmap (			/* Generate a pairing map */
 	std::vector<int> relps;		/* A set of all possible positive relative primes */
 	bool	WINDOWED;		/* True if faster prime window will be used, reduces prime pairing a little bit */
 	int	WINDOW_REDUCTION_SIZE;	/* Number of D rows to process in the prime window */
+	(void) sieve_info;		/* Unused, the primes for the pairmap are sieved by prime_generator */
 
 /* Do some prep work for windowed vs. non-windowed pairing */
 
@@ -746,7 +748,7 @@ int fill_pairmap (			/* Generate a pairing map */
 		}
 		// Insert prime into the map
 		void insert (uint64_t prime) { map[(uint32_t)prime/2 & mask] = prime_count++; prime_count &= mask; }
-		void faux_insert (uint64_t prime) { prime_count++; prime_count &= mask; }
+		void faux_insert (uint64_t) { prime_count++; prime_count &= mask; }
 		// Find index into prime_window circular buffer.  Returns NOT_IN_PRIME_MAP if value is not in the prime window.
 		uint32_t find (uint64_t value) {
 			auto x = map[(uint32_t)value/2 & mask];
