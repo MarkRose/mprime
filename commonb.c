@@ -326,7 +326,7 @@ uint32_t get_ranked_num_threads (
 {
 	if (!hyperthreading) return (num_cores);
 	uint32_t num_threads = 0;
-	for (uint32_t core = base_core_num; core < (int) HW_NUM_CORES && core < base_core_num + num_cores; core++)
+	for (uint32_t core = base_core_num; core < HW_NUM_CORES && core < base_core_num + num_cores; core++)
 		num_threads += HW_CORES[get_ranked_core(core)].num_threads;
 	return (num_threads);
 }
@@ -2945,7 +2945,7 @@ int LaunchWorkers (
 	ld->num_threads = NUM_WORKERS;
 	LAUNCH_TYPE = LD_CONTINUE;
 	create_worker_windows (NUM_WORKERS);
-	ld->num_to_mark_active = (thread_num == ALL_WORKERS ? NUM_WORKERS : -thread_num);
+	ld->num_to_mark_active = (thread_num == ALL_WORKERS ? (int) NUM_WORKERS : -thread_num);
 	if (wait_flag) {
 		gwthread_create_waitable (&thread_handle, &Launcher, ld);
 		gwthread_wait_for_exit (&thread_handle);
@@ -4377,7 +4377,7 @@ void factor_auxiliary_thread (void *arg)
 
 		gwmutex_lock (&facdata->thread_lock);
 		facdata->num_active_threads++;
-		if (facdata->num_active_threads == facdata->num_threads - 1) {
+		if (facdata->num_active_threads == (unsigned int) (facdata->num_threads - 1)) {
 			gwevent_reset (&facdata->thread_work_to_do);
 			gwevent_signal (&facdata->all_threads_started);
 		}
@@ -4583,7 +4583,7 @@ memerr:		OutputStr (thread_num, "Error allocating memory for trial factoring.\n"
 		for (num_small_primes = 0; num_small_primes < estimated_num_primes; ) {
 			prime = (int) sieve (sieve_info);
 			if (prime > maxprime) break;
-			if (prime == p) continue;				// Rare case: TF where exponent <= maxprime
+			if ((unsigned long) prime == p) continue;		// Rare case: TF where exponent <= maxprime
 			if (num_siever_groups % prime == 0) continue;		// Don't add primes that are handled by facdist
 			if (facdata->initsieve_primes % prime == 0) continue;	// Don't add primes that are handled by initsieve
 			*primearray++ = prime;	// Save the small prime
@@ -9524,7 +9524,7 @@ int primeBenchMultipleWorkersInternal (
 		    for (hypercpus = 1; hypercpus <= 2; hypercpus++) {
 			if (hypercpus > 1 && (HW_NUM_CORES == HW_NUM_THREADS || !bench_hyperthreading)) break;
 			/* If the OS cannot set affinity, then we can only bench hyperthreading on all CPUs */
-			if (!OS_CAN_SET_AFFINITY && hypercpus > 1 && cpus != HW_NUM_CORES) continue;
+			if (!OS_CAN_SET_AFFINITY && hypercpus > 1 && cpus != (int) HW_NUM_CORES) continue;
 			for (workers = min_workers; workers <= cpus && workers <= max_workers; workers += incr_workers) {
 			    int	nodes_left, workers_left, node, worker_num, cores_left, core_num;
 			    int efficiency_workers, unused_cores_left;
@@ -9607,7 +9607,7 @@ int primeBenchMultipleWorkersInternal (
 
 					// If we've reached the first efficiency node, add back in the number of efficiency cores and workers
 					// so that we now divide efficiency cores as evenly as possible amongst the efficiency nodes.
-					if (node == HW_NUM_COMPUTE_THREADING_NODES) {
+					if (node == (int) HW_NUM_COMPUTE_THREADING_NODES) {
 						nodes_left += HW_NUM_THREADING_NODES - HW_NUM_COMPUTE_THREADING_NODES;
 						cores_left += HW_NUM_CORES - HW_NUM_COMPUTE_CORES;
 						if (cpus > (int) HW_NUM_COMPUTE_CORES) unused_cores_left += HW_NUM_CORES - cpus;
@@ -9728,7 +9728,7 @@ int primeBenchMultipleWorkersInternal (
 /* all-cores timings for FFT lengths from 1M on up.  These timings should prove more useful in */
 /* comparing which CPUs are the most powerful. */
 
-			    if (!all_bench && is_a_5678 && !plus1 && cpus == HW_NUM_CORES && hypercpus == 1 && fftlen / 1024 >= 1024)
+			    if (!all_bench && is_a_5678 && !plus1 && cpus == (int) HW_NUM_CORES && hypercpus == 1 && fftlen / 1024 >= 1024)
 				add_bench_data_to_pkt (pkt, "TP%luK", fftlen, throughput, FALSE);
 
 /* Benchmark next FFT */
@@ -9901,7 +9901,7 @@ void autoBench (void)
 		// Always auto-bench using all the cores.  Prime95 always calls gwset_bench_cores with HW_NUM_CORES.
 		num_cores = HW_NUM_CORES;
 	}
-	num_workers = BENCH_NUM_WORKERS ? BENCH_NUM_WORKERS : NUM_WORKERS; /* Use gwnum.txt override or default to all workers */
+	num_workers = BENCH_NUM_WORKERS ? BENCH_NUM_WORKERS : (int) NUM_WORKERS; /* Use gwnum.txt override or default to all workers */
 
 /* Get some ini file overrides for autobenching criteria. */
 
@@ -10194,9 +10194,9 @@ int primeBench (
 	    if (hypercpu > 1 && !bench_hyperthreading) break;
 	    if (hypercpu > 1 && HW_NUM_CORES == HW_NUM_THREADS) break;
 	    /* Only bench hyperthreading on one core and all cores */
-	    if (hypercpu > 1 && cores != 1 && cores != HW_NUM_COMPUTE_CORES && cores != HW_NUM_CORES) continue;
+	    if (hypercpu > 1 && cores != 1 && cores != (int) HW_NUM_COMPUTE_CORES && cores != (int) HW_NUM_CORES) continue;
 	    /* If the OS cannot set affinity, then we can only bench hyperthreading on all cores */
-	    if (!OS_CAN_SET_AFFINITY && hypercpu > 1 && cores != HW_NUM_CORES) continue;
+	    if (!OS_CAN_SET_AFFINITY && hypercpu > 1 && cores != (int) HW_NUM_CORES) continue;
 	    /* Output a message if using multi-threaded FFT */
 	    if (cores > 1 || hypercpu > 1) {
 	      if (! (CPU_FLAGS & CPU_SSE2)) continue;  // Only SSE2 and later code supports multi-threaded FFTs
@@ -10362,7 +10362,7 @@ int primeBench (
 /* timings for FFT lengths from 1M on up.  These timings should prove more useful in */
 /* comparing which CPU is are most powerful. */
 
-		  if (!all_bench && is_a_5678 && !plus1 && cores == HW_NUM_COMPUTE_CORES && hypercpu == 1 && fftlen / 1024 >= 1024)
+		  if (!all_bench && is_a_5678 && !plus1 && cores == (int) HW_NUM_COMPUTE_CORES && hypercpu == 1 && fftlen / 1024 >= 1024)
 			add_bench_data_to_pkt (&pkt, "AC%luK", fftlen, timer_value (timers, 0), TRUE);
 
 /* Time next FFT */
@@ -10483,7 +10483,7 @@ void createProofResiduesFile (
 
 		// Create a buffer filled with random data
 		srand ((unsigned) time (NULL));
-		for (i = 0; i < sizeof (buf); i++) buf[i] = rand() & 0xFF;
+		for (i = 0; i < (int) sizeof (buf); i++) buf[i] = rand() & 0xFF;
 
 		// Calculate how much disk space we need to fill
 		if (!ps->md5_residues)
@@ -10531,7 +10531,7 @@ void createProofResiduesFile (
 			// More randomizing the data
 			p = (uint64_t *) buf;
 			randomizer = p[i & (sizeof (buf) / 8 - 1)] << 1;
-			for (j = 0; j < sizeof (buf) / 8; j++) *p++ ^= randomizer;
+			for (j = 0; j < (int) (sizeof (buf) / 8); j++) *p++ ^= randomizer;
 		}
 	}
 
@@ -11419,7 +11419,7 @@ int readPRPSaveFile (
 		if (!read_long (fd, &savefile_two_power_opt, &sum)) goto err;
 		// This test causes PRP test to restart from scratch if PRPStraightForward option is changed.
 		// Alternatively we could re-init PRP code with two_power_opt toggled.
-		if (ps->two_power_opt != savefile_two_power_opt) goto err;
+		if ((unsigned long) ps->two_power_opt != savefile_two_power_opt) goto err;
 	} else {
 		savefile_prp_base = 3;
 		ps->units_bit = 0;
@@ -11434,11 +11434,11 @@ int readPRPSaveFile (
 		unsigned long savefile_state, savefile_residue_type, savefile_error_check_type;
 		// We might be able to handle some mismatched residue types, for now don't since this should never happen
 		if (!read_long (fd, &savefile_residue_type, &sum)) goto err;
-		if (savefile_residue_type != ps->residue_type) goto err;
+		if (savefile_residue_type != (unsigned long) ps->residue_type) goto err;
 		// We could handle some mismatched error check types by looking at the state
 		// variable, for now don't since this should never happen
 		if (!read_long (fd, &savefile_error_check_type, &sum)) goto err;
-		if (savefile_error_check_type != ps->error_check_type) goto err;
+		if (savefile_error_check_type != (unsigned long) ps->error_check_type) goto err;
 		if (!read_long (fd, &savefile_state, &sum)) goto err;
 		ps->state = savefile_state;
 		if (!read_long (fd, &ps->alt_units_bit, &sum)) goto err;

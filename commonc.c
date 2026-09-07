@@ -1870,10 +1870,10 @@ int readIniFiles (void)
 	night_memory = IniGetInt (INI_FILE, "NightMemory", 0);
 	if (day_memory || night_memory) {
 		int	day_start_time, day_end_time;
-		day_memory = (day_memory < 0) ? physical_memory () + day_memory : day_memory;
+		day_memory = (day_memory < 0) ? (int) physical_memory () + day_memory : day_memory;
 		if (day_memory < 8) day_memory = 8;
 		if ((unsigned long) day_memory > physical_memory () - 8) day_memory = physical_memory () - 8;
-		night_memory = (night_memory < 0) ? physical_memory () + night_memory : night_memory;
+		night_memory = (night_memory < 0) ? (int) physical_memory () + night_memory : night_memory;
 		if (night_memory < 8) night_memory = 8;
 		if ((unsigned long) night_memory > physical_memory () - 8) night_memory = physical_memory () - 8;
 		day_start_time = IniGetInt (INI_FILE, "DayStartTime", 450);
@@ -2390,7 +2390,7 @@ void OutputStr (
 			while (buf != eol) {
 				int	len;
 				len = (int) (eol - buf);
-				if (len >= sizeof (tmpbuf)) len = sizeof (tmpbuf) - 1;
+				if (len >= (int) sizeof (tmpbuf)) len = sizeof (tmpbuf) - 1;
 				memcpy (tmpbuf, buf, len);
 				tmpbuf[len] = 0;
 				OutputStrInternal (thread_num, tmpbuf);
@@ -4299,7 +4299,7 @@ void adjust_rolling_average (void)
 /* Make sure hash codes match.  This protects us against making incorrect */
 /* rolling average adjustments when user manually edits worktodo.txt. */
 
-	if (hash != IniSectionGetInt (INI_FILE, SEC_Internals, KEY_RollingHash, 0)) goto no_update;
+	if (hash != (unsigned long) IniSectionGetInt (INI_FILE, SEC_Internals, KEY_RollingHash, 0)) goto no_update;
 
 /* Now compute the rolling average for this time period.  For example, if */
 /* the time-to-complete decreased 5 hours over the last 6 hours of elapsed */
@@ -4502,7 +4502,7 @@ int read_array (
 	size_t	i;
 	unsigned char *ubuf;
 
-	if (__read (fd, buf, len) != len) return (FALSE);
+	if (__read (fd, buf, len) != (int64_t) len) return (FALSE);
 	ubuf = (unsigned char *) buf;
 	if (sum != NULL) for (i = 0; i < len; i++) *sum += (uint32_t) ubuf[i];
 	return (TRUE);
@@ -4518,7 +4518,7 @@ int write_array (
 	unsigned char *ubuf;
 
 	if (len == 0) return (TRUE);
-	if (__write (fd, buf, len) != len) return (FALSE);
+	if (__write (fd, buf, len) != (int64_t) len) return (FALSE);
 	ubuf = (unsigned char *) buf;
 	if (sum != NULL) for (i = 0; i < len; i++) *sum += (uint32_t) ubuf[i];
 	return (TRUE);
@@ -4537,7 +4537,7 @@ int read_giant (
 	if (len == 0) return (FALSE);
 
 	bytes = len * sizeof (uint32_t);
-	if (_read (fd, g->n, bytes) != bytes) return (FALSE);
+	if (_read (fd, g->n, bytes) != (int64_t) bytes) return (FALSE);
 	if (len && g->n[len-1] == 0) return (FALSE);
 	g->sign = len;
 	*sum += (uint32_t) len;
@@ -4562,7 +4562,7 @@ int write_giant (
 		return (FALSE);
 	}
 	bytes = len * sizeof (uint32_t);
-	if (_write (fd, g->n, bytes) != bytes) {
+	if (_write (fd, g->n, bytes) != (int64_t) bytes) {
 		char	buf[200];
 		sprintf (buf, "In write_giant, unexpected write failure len = %lu\n", len);
 		OutputBoth (MAIN_THREAD_NUM, buf);
@@ -5845,7 +5845,7 @@ int getProgramOptions (void)
 		}
 
 		if (pkt.dayMemory != -1) {
-			if (day_memory != pkt.dayMemory) {
+			if (day_memory != (unsigned int) pkt.dayMemory) {
 				day_memory = pkt.dayMemory;
 				mem_changed = TRUE;
 			}
@@ -5853,7 +5853,7 @@ int getProgramOptions (void)
 		}
 
 		if (pkt.nightMemory != -1) {
-			if (night_memory != pkt.nightMemory) {
+			if (night_memory != (unsigned int) pkt.nightMemory) {
 				night_memory = pkt.nightMemory;
 				mem_changed = TRUE;
 			}
@@ -5861,7 +5861,7 @@ int getProgramOptions (void)
 		}
 
 		if (pkt.dayStartTime != -1) {
-			if (day_start_time != pkt.dayStartTime) {
+			if (day_start_time != (unsigned int) pkt.dayStartTime) {
 				day_start_time = pkt.dayStartTime;
 				mem_changed = TRUE;
 			}
@@ -5869,7 +5869,7 @@ int getProgramOptions (void)
 		}
 
 		if (pkt.nightStartTime != -1) {
-			if (day_end_time != pkt.nightStartTime) {
+			if (day_end_time != (unsigned int) pkt.nightStartTime) {
 				day_end_time = pkt.nightStartTime;
 				mem_changed = TRUE;
 			}
@@ -7056,7 +7056,7 @@ void salvageCorruptSpoolFile (void)
 				if (! isprint (*in) && *in != '\n') continue;
 				*out++ = *in;
 				if (*in == '\n');
-				else if ((int) (out - pkt.message) < sizeof (pkt.message) - 1) continue;
+				else if ((int) (out - pkt.message) < (int) (sizeof (pkt.message) - 1)) continue;
 				else *out++ = '\n';
 				*out++ = 0;
 				if ((int) (out - pkt.message) > 20) {

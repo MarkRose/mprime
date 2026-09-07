@@ -395,7 +395,7 @@ done:	if (askOkCancel ()) {
 				IniSectionWriteInt (INI_FILE, SEC_PrimeNet, KEY_ProxyMask, 0);
 			}
 		}
-		if (m_debug != primenet_debug) {
+		if (m_debug != (unsigned long) primenet_debug) {
 			IniSectionWriteInt (INI_FILE, SEC_PrimeNet, KEY_Debug, m_debug);
 		}
 
@@ -465,7 +465,7 @@ void test_workers (void)
 	int	i, cores_assigned, m_cert_work;
 
 	m_num_thread = NUM_WORKERS;
-	for (i = 0; i < NUM_WORKERS; i++) {
+	for (i = 0; i < (int) NUM_WORKERS; i++) {
 		m_work_pref[i] = WORK_PREFERENCE[i];
 		m_numcpus[i] = CORES_PER_WORKER[i];
 	}
@@ -490,7 +490,7 @@ again:	if (max_num_workers () > 1)
 
 	if (USE_PRIMENET || HW_NUM_CORES > 1) {
 	    cores_assigned = 0;
-	    for (i = 0; i < m_num_thread; i++) {
+	    for (i = 0; i < (int) m_num_thread; i++) {
 		if (m_num_thread > 1)
 			printf ("\nOptions for worker #%d\n\n", i+1);
 		else
@@ -498,7 +498,7 @@ again:	if (max_num_workers () > 1)
 
 		if (USE_PRIMENET) {
 			askNum ("Type of work to get", &m_work_pref[i], 0, 161);
-			if (m_numcpus[i] < min_cores_for_work_pref (m_work_pref[i]))
+			if (m_numcpus[i] < (unsigned long) min_cores_for_work_pref (m_work_pref[i]))
 				m_numcpus[i] = min_cores_for_work_pref (m_work_pref[i]);
 		}
 
@@ -508,8 +508,8 @@ again:	if (max_num_workers () > 1)
 			// Max cores = num_cores_unassigned - num_workers_unconfigured + 1
 			max_cores = ((int) HW_NUM_CORES - cores_assigned) - ((int) m_num_thread - i) + 1;
 			if (max_cores < min_cores) max_cores = min_cores;
-			if (m_numcpus[i] < min_cores) m_numcpus[i] = min_cores;
-			if (m_numcpus[i] > max_cores) m_numcpus[i] = max_cores;
+			if (m_numcpus[i] < (unsigned long) min_cores) m_numcpus[i] = min_cores;
+			if (m_numcpus[i] > (unsigned long) max_cores) m_numcpus[i] = max_cores;
 			askNum ("CPU cores to use (multithreading)", &m_numcpus[i], min_cores, max_cores);
 		} else
 			m_numcpus[i] = 1;
@@ -587,7 +587,7 @@ again:	if (max_num_workers () > 1)
 				new_options = TRUE;
 			}
 		} else {
-			for (i = 0; i < (int) NUM_WORKERS; i++) {
+			for (i = 0; i < NUM_WORKERS; i++) {
 				if (WORK_PREFERENCE[i] == m_work_pref[i]) continue;
 				PTOSetOne (INI_FILE, "WorkPreference", NULL, WORK_PREFERENCE, i, m_work_pref[i]);
 				new_options = TRUE;
@@ -598,7 +598,7 @@ again:	if (max_num_workers () > 1)
 
 		if (AreAllTheSame (m_numcpus, m_num_thread))
 			PTOSetAll (INI_FILE, "CoresPerWorker", NULL, CORES_PER_WORKER, m_numcpus[0]);
-		else for (i = 0; i < (int) NUM_WORKERS; i++)
+		else for (i = 0; i < NUM_WORKERS; i++)
 			PTOSetOne (INI_FILE, "CoresPerWorker", NULL, CORES_PER_WORKER, i, m_numcpus[i]);
 
 /* Write the new CertWork setting */
@@ -1014,11 +1014,11 @@ void options_resources (void)
 
 		new_day_start_time = strToMinutes (m_start_time);
 		new_day_end_time = strToMinutes (m_end_time);
-		if (day_memory != (int) (m_day_memory * 1024.0)  ||
-		    night_memory != (int) (m_night_memory * 1024.0) ||
+		if (day_memory != (unsigned int) (m_day_memory * 1024.0)  ||
+		    night_memory != (unsigned int) (m_night_memory * 1024.0) ||
 		    day_start_time != new_day_start_time ||
 		    day_end_time != new_day_end_time) {
-			write_memory_settings ((int) (m_day_memory * 1024.0), (int) (m_night_memory * 1024.0), new_day_start_time, new_day_end_time);
+			write_memory_settings ((unsigned int) (m_day_memory * 1024.0), (unsigned int) (m_night_memory * 1024.0), new_day_start_time, new_day_end_time);
 			mem_settings_have_changed ();
 			spoolMessage (PRIMENET_PROGRAM_OPTIONS, NULL);
 		}
@@ -1264,16 +1264,16 @@ void options_benchmark (void)
 		// To come up with a rational default for number of workers, we need to know the maximum number of
 		// cores the benchmark will be running on.
 		max_cores = 1;
-		for (i = 2; i <= HW_NUM_CORES; i++) if (is_number_in_list (i, m_cores)) max_cores = i;
+		for (i = 2; i <= (int) HW_NUM_CORES; i++) if (is_number_in_list (i, m_cores)) max_cores = i;
 		// If testing all FFT implementations. then default to the current num_workers.
 		numvals = 0;
-		if (NUM_WORKERS <= max_cores) sorted_add_unique (vals, &numvals, NUM_WORKERS);
+		if ((int) NUM_WORKERS <= max_cores) sorted_add_unique (vals, &numvals, NUM_WORKERS);
 		else sorted_add_unique (vals, &numvals, max_cores);
 		// Otherwise, assume user is trying to figure out how many workers to run and form a string
 		// with the most common best values for number of workers: 1, num_threading_nodes, num_cores, num_workers
 		if (!m_all_FFT_impl) {
 			sorted_add_unique (vals, &numvals, 1);
-			if (HW_NUM_THREADING_NODES <= max_cores) sorted_add_unique (vals, &numvals, HW_NUM_THREADING_NODES);
+			if ((int) HW_NUM_THREADING_NODES <= max_cores) sorted_add_unique (vals, &numvals, HW_NUM_THREADING_NODES);
 			sorted_add_unique (vals, &numvals, max_cores);
 		}
 		sprintf (m_workers, "%d", vals[0]);

@@ -636,7 +636,7 @@ int fill_pairmap (			/* Generate a pairing map */
 			if (relp_sets[i] >= 0) relp = relp_sets[i] * D + relps[j];
 			else relp = - relp_sets[i] * D - relps[numrels - 1 - j];
 			relps.push_back (relp);
-			if (relps.size() == totrels) break;
+			if (relps.size() == (size_t) totrels) break;
 		}
 	}
 	std::sort (relps.begin(), relps.end());
@@ -666,7 +666,7 @@ int fill_pairmap (			/* Generate a pairing map */
 
 	B2_start = round_down_to_multiple_of (B2_start - D / 2, D) + D / 2;
 	B2_end = round_up_to_multiple_of (B2 + D / 2, D) - D / 2;
-	if (max_relp > B2_start + D / 2) B2_start_reloc = 0;
+	if ((uint64_t) max_relp > B2_start + D / 2) B2_start_reloc = 0;
 	else B2_start_reloc = B2_start + D / 2 - max_relp;
 	if (B2_start_reloc < first_relocatable) B2_start_reloc = first_relocatable;
 	numDsections = (B2_end - B2_start) / D;

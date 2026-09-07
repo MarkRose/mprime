@@ -352,7 +352,7 @@ int cert (
 
 /* Decide if we can start the next forward FFT.  This is faster, but leaves the result in an "unsavable-to-disk" state. */
 
-		gwstartnextfft (&cs.gwdata, !saving && cs.counter != w->cert_squarings-1);
+		gwstartnextfft (&cs.gwdata, !saving && cs.counter != (unsigned long) w->cert_squarings - 1);
 		gwsetnormroutine (&cs.gwdata, 0, echk, 0);
 		gwsquare (&cs.gwdata, cs.x);
 		cs.units_bit <<= 1;
