@@ -1178,6 +1178,7 @@ void options_torture (void)
 	// Assign other options
 	m_memory = (float) (m_type <= 3 ? 0.0 : round_to_tenth (blendmemory / 1024.0));
 	m_timefft = (m_hyperthreading ? 6 : 3);
+	m_weak = m_avx512 = m_fma3 = m_avx = m_sse2 = 0;
 
 	// Let user customize
 	m_custom = FALSE;
@@ -1199,7 +1200,6 @@ void options_torture (void)
 
 	// Ask about running a less stressful torture test.  Stop on first negative answer.
 	// X86-64 cannot go any lower than SSE2.
-	m_weak = m_avx512 = m_fma3 = m_avx = m_sse2 = 0;
 	askYN ("Run a weaker torture test (not recommended)", &m_weak);
 	if (m_weak && CPU_FLAGS & CPU_AVX512F) askYN ("Disable AVX-512", &m_avx512), m_weak = m_avx512;
 	if (m_weak && CPU_FLAGS & CPU_FMA3) askYN ("Disable AVX2 (fused multiply add)", &m_fma3), m_weak = m_fma3;
@@ -1226,7 +1226,7 @@ void options_benchmark (void)
 {
 	unsigned long m_bench_type, m_minFFT, m_maxFFT, m_bench_time;
 	char	m_cores[512], m_workers[512];
-	int	m_errchk, m_negacyclic, m_limit_FFT_sizes, m_hyperthreading, m_all_FFT_impl;
+	int	m_errchk = 0, m_negacyclic = 0, m_limit_FFT_sizes = 0, m_hyperthreading, m_all_FFT_impl = 0;
 
 	m_bench_type = 0;
 	askNum ("Benchmark type (0 = Throughput, 1 = FFT timings, 2 = Trial factoring)", &m_bench_type, 0, 2);

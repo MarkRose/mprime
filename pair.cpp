@@ -1064,7 +1064,7 @@ int fill_pairmap (			/* Generate a pairing map */
 			// Start the queue off with the original unpaired prime
 			unexamined.push (&*it);
 
-			int	best_rank;
+			int	best_rank = 0;		// Only read once p_best_pairing is set
 			prime_data *p_best_pairing, *p_best_chain_end;
 
 			// Examine the unexamined queue hoping one entry will provide a link to an unpaired prime that let's us create a new pairing.
@@ -1362,8 +1362,8 @@ if (FIRST_EXIT && WINDOWED && next_prime != 0 && p_best_pairing != NULL) break;
 			// Validate the single
 			pgen.validate_prime (it->prime, it->base_prime);
 			// Generate a fake pairing being extra careful to find a valid pairing when the single is past B2_end.
-			int pairing_set, prime_relp;
-			uint64_t pairing_Dblock;
+			int pairing_set = 0, prime_relp = 0;
+			uint64_t pairing_Dblock = 0;
 			for (i = 0; i < int_multiplier; i++) {
 				pairing_set = relp_sets[i];
 				prime_relp = it->relp;

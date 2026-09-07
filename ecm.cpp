@@ -170,7 +170,7 @@ int16_t get_max_relp_set (
 	int16_t *relp_sets)
 {
 	int16_t	num_permanent_sets = *relp_sets;
-	int16_t max_set;
+	int16_t max_set = 0;
 	for (int16_t i = 0; i < num_permanent_sets; i++) {
 		if (i == 0 || max_set < relp_sets[3 + i]) max_set = relp_sets[3 + i];
 	}
@@ -217,7 +217,7 @@ using relp_set_data_map = std::map<int16_t,relp_set_data,relpclasscomp>;
 class Dmultiple_data {
 public:
 	// Constructor
-	Dmultiple_data (int16_t rlub, uint64_t dlub) {val.x = NULL; val.z = NULL; relp_last_used_by = rlub; Dmult_last_used_by = dlub; base = addin = diff = 0; }
+	Dmultiple_data (int16_t rlub, uint64_t dlub) {gwdata = NULL; do_not_free_val = FALSE; val.x = NULL; val.z = NULL; relp_last_used_by = rlub; Dmult_last_used_by = dlub; base = addin = diff = 0; }
 	// Destructor
 	~Dmultiple_data () { if (!do_not_free_val) { gwfree (gwdata, val.x); gwfree (gwdata, val.z); } }
 	// Set val buffers
@@ -788,7 +788,7 @@ double best_stage2_impl_internal (
 	uint64_t B2_end;
 	float	pairing_percentage, pairing_runtime;
 	double	efficiency, best_efficiency;
-	int	D, i, best_i, j;
+	int	D, i, best_i = 0, j;
 
 /* Select which D_data to use */
 
@@ -2845,7 +2845,7 @@ oom:	return (OutOfMemory (ecmdata->thread_num));
 /* then (5+3*v)/(3+2*v), etc.  Finally, execute the cheapest. */
 
 __inline int lucas_cost_several (uint64_t n, uint64_t *d) {
-	int	i, c, min;
+	int	i, c, min = 0;
 	uint64_t testd;
 	for (i = 0, testd = *d - PRAC_SEARCH / 2; i < PRAC_SEARCH; i++, testd++) {
 		c = lucas_cost (n, testd);
@@ -4810,7 +4810,7 @@ bool NAF_dictionary_init (
 
 	uint64_t bitnum = len - 1;
 	int max_dictionary_value = 2 * ecmdata->NAF_dictionary_size - 1;
-	int first_NAF_value;
+	int first_NAF_value = 0;
 	for (int tmp = 0; tmp * 2 + 1 <= max_dictionary_value; bitnum--) {
 		tmp *= 2;
 		if (mpz_tstbit64 (ecmdata->stage1_exp, bitnum)) {
@@ -5495,7 +5495,7 @@ double ecm_stage2_cost (
 	int	e;
 	int	beste;		/* The best E value when using mQx pooling */
 	double	numgcdsections;
-	double	cost, cost_modinv;
+	double	cost, cost_modinv = 0.0;
 
 /* Prime pairing and poly mult stage 2 requires completely different cost functions. */
 /* First estimate the stage 2 costs using prime pairing. */
@@ -9088,6 +9088,7 @@ start_timer_from_zero (timers, 0);
 // Open file for saving up to two Ftree rows
 
 	int	fd;
+	fd = -1;			// Declaration and assignment must be separate, a goto jumps over this code
 	if (ecmdata.Ftree_polys_in_mem < 2) {
 		fd = _open (ftree_filename, _O_CREAT | _O_TRUNC | _O_BINARY | _O_RDWR, CREATE_FILE_ACCESS);
 //GW				if (fd < 0) goto ???  switch to memory with smaller poly??? 
@@ -11285,7 +11286,7 @@ int pm1_choose_B2 (
 				  uint64_t altB2 = altB1 + (uint64_t) (0.99 * (x.B2 - pm1data->B)); \
 				  x.compared_to_next_i = pm1prob (takeAwayBits, pm1data->w->sieve_depth, altB1,altB2) - cost_data.factor_probability; \
 				  x.compared_to_next_i = - fabs (x.compared_to_next_i); \
-				} else x.actual_i = x.i, x.compared_to_next_i = -100.0;
+				} else x.actual_i = x.i, x.compared_to_next_i = -100.0, x.D = 0, x.fac_pct = 0.0;
 
 // Return TRUE if x is better than y.
 // Each D value has its own breakeven point.  Significantly higher D values ought to be more efficient than lower D values.
@@ -15216,7 +15217,7 @@ int pp1_lucas_cost (
 }
 
 __inline int pp1_lucas_cost_several (uint64_t n, uint64_t *d) {
-	int	i, c, min;
+	int	i, c, min = 0;
 	uint64_t testd;
 	for (i = 0, testd = *d - PRAC_SEARCH / 2; i < PRAC_SEARCH; i++, testd++) {
 		c = pp1_lucas_cost (n, testd);
