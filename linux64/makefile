@@ -25,7 +25,12 @@ CFLAGS = -I.. -I../gwnum -I/usr/local/include -std=gnu99 -DX86_64 -Wall -Wextra 
 CPP = g++
 CPPFLAGS = -I.. -I../gwnum -I../../boost_1_76_0 -DX86_64 -std=c++11 -Wall -Wextra -O2 -DPORT=8
 
-LFLAGS = -Wl,-M -Wl,-L/usr/local/lib
+# PIEFLAG is empty by default, which leaves the choice of PIE or non-PIE to the compiler's default.
+# "make PIEFLAG=-no-pie" (gcc 6 or later) links a non-PIE executable, which silences the two ld warnings
+# about relocations in gwnum.a's zr4_skx.o at the cost of ASLR for the executable.
+PIEFLAG =
+
+LFLAGS = -Wl,-M -Wl,-L/usr/local/lib $(PIEFLAG)
 #LIBS = ../gwnum/gwnum.a ../gwnum/polymult.a -lm -lpthread -Wl,-Bstatic -lhwloc -Wl,-Bstatic -lcurl -Wl,-Bdynamic -lrt -lstdc++ -lz -lxml2 -ldl -lgmp
 LIBS = ../gwnum/gwnum.a ../gwnum/polymult.a -lm -lpthread -Wl,-Bstatic -lhwloc -Wl,-Bstatic -lcurl -Wl,-Bdynamic -lrt -lstdc++ -ldl -lgmp
 
