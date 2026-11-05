@@ -6861,11 +6861,11 @@ retry:
 	    }
 	}
 
-/* Set some ini flags after we've successfully quit gimps.  It may take a while to get all the proof files sent. */
+/* Set some ini flags after we've successfully quit gimps.  It may take a while to get all the proof files and stage 1 residues sent. */
+/* Stopping the use of PrimeNet any earlier would strand them, as the uploader threads do nothing when not using PrimeNet. */
 
-	char	proof_files[50][512];		// We can send up to 50 proof files
 	if ((header_words[1] & HEADER_FLAG_QUIT_GIMPS && USE_PRIMENET) ||
-	    (IniGetInt (INI_FILE, KEY_QuitGIMPS, 0) && WORKTODO_COUNT == 0 && ProofFileNames (proof_files) == 0)) {
+	    (IniGetInt (INI_FILE, KEY_QuitGIMPS, 0) && WORKTODO_COUNT == 0 && !primenet_uploads_pending ())) {
 		USE_PRIMENET = 0;
 		IniWriteInt (INI_FILE, "UsePrimenet", 0);
 		IniWriteString (INI_FILE, KEY_QuitGIMPS, NULL);
@@ -7363,16 +7363,14 @@ int inUploadWindow (int *minutes_to_start)
 	return (current_time >= start_time || current_time <= end_time);
 }
 
-/* Return TRUE if there is anything left to send to the PrimeNet server: results or other messages waiting in the spool file, or proof files */
-/* waiting to be uploaded.  The spool file is deleted once the communication thread has sent everything in it.  This is used to let mprime exit */
-/* as soon as it has nothing more to send rather than after a fixed delay.  It returns FALSE when not using PrimeNet as nothing will be sent. */
+/* Return TRUE if there are files waiting to be uploaded: proof files, or stage 1 residues staged for a P-1 proxy.  Proof files only count when */
+/* proof uploading is turned on, and staged residues only when the proxy has said it accepts them, as otherwise they will never be uploaded. */
+/* The communication thread uses this to wait before it stops using PrimeNet after the last work is done (QuitGIMPS). */
 
-int primenet_transfers_pending (void)
+int primenet_uploads_pending (void)
 {
 	char	proof_files[50][512];		// We can send up to 50 proof files
 
-	if (!USE_PRIMENET) return (FALSE);
-	if (fileExists (SPOOL_FILE)) return (TRUE);
 	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_ProofUploads, 1) && ProofFileNames (proof_files) > 0) return (TRUE);
 
 /* Stage 1 residues staged for the P-1 proxy.  They are only uploaded if the proxy said it accepts them. */
@@ -7382,6 +7380,17 @@ int primenet_transfers_pending (void)
 		if (P1FileNames (p1_files) > 0) return (TRUE);
 	}
 	return (FALSE);
+}
+
+/* Return TRUE if there is anything left to send to the PrimeNet server: results or other messages waiting in the spool file, or files waiting */
+/* to be uploaded.  The spool file is deleted once the communication thread has sent everything in it.  This is used to let mprime exit as soon */
+/* as it has nothing more to send rather than after a fixed delay.  It returns FALSE when not using PrimeNet as nothing will be sent. */
+
+int primenet_transfers_pending (void)
+{
+	if (!USE_PRIMENET) return (FALSE);
+	if (fileExists (SPOOL_FILE)) return (TRUE);
+	return (primenet_uploads_pending ());
 }
 
 /* This routine runs in its own thread continuously looking for proof files to upload */
