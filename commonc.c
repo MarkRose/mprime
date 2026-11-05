@@ -7374,6 +7374,13 @@ int primenet_transfers_pending (void)
 	if (!USE_PRIMENET) return (FALSE);
 	if (fileExists (SPOOL_FILE)) return (TRUE);
 	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_ProofUploads, 1) && ProofFileNames (proof_files) > 0) return (TRUE);
+
+/* Stage 1 residues staged for the P-1 proxy.  They are only uploaded if the proxy said it accepts them. */
+
+	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_P1Uploads, 1) && IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_AcceptsP1Uploads, 0)) {
+		char	p1_files[50][512];
+		if (P1FileNames (p1_files) > 0) return (TRUE);
+	}
 	return (FALSE);
 }
 

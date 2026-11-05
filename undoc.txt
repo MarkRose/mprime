@@ -547,7 +547,7 @@ or when UsePrimenet=1 and QuitGIMPS=1.
 	ExitWhenOutOfWork=n
 where n is the maximum number of seconds to wait before exiting.  When using PrimeNet, mprime
 checks every 5 seconds and exits as soon as the last results have been sent and all proof
-files have been uploaded, or after n seconds, whichever comes first.  Set n high enough to
+files (and any stage 1 residues staged for a P-1 proxy) have been uploaded, or after n seconds, whichever comes first.  Set n high enough to
 give mprime time to send the last results and upload proof files to the server, such as 86400,
 because if the server cannot be reached mprime waits the full n seconds.  When not using
 PrimeNet there is nothing to send and mprime exits right away.
