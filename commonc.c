@@ -7363,6 +7363,20 @@ int inUploadWindow (int *minutes_to_start)
 	return (current_time >= start_time || current_time <= end_time);
 }
 
+/* Return TRUE if there is anything left to send to the PrimeNet server: results or other messages waiting in the spool file, or proof files */
+/* waiting to be uploaded.  The spool file is deleted once the communication thread has sent everything in it.  This is used to let mprime exit */
+/* as soon as it has nothing more to send rather than after a fixed delay.  It returns FALSE when not using PrimeNet as nothing will be sent. */
+
+int primenet_transfers_pending (void)
+{
+	char	proof_files[50][512];		// We can send up to 50 proof files
+
+	if (!USE_PRIMENET) return (FALSE);
+	if (fileExists (SPOOL_FILE)) return (TRUE);
+	if (IniSectionGetInt (INI_FILE, SEC_PrimeNet, KEY_ProofUploads, 1) && ProofFileNames (proof_files) > 0) return (TRUE);
+	return (FALSE);
+}
+
 /* This routine runs in its own thread continuously looking for proof files to upload */
 
 void proofUploader (void *arg)

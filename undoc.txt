@@ -545,8 +545,12 @@ server to assign more work.  This prime.txt option can be used to have mprime ex
 when all workers runs out of work.  Note this probably only makes sense when UsePrimenet=0
 or when UsePrimenet=1 and QuitGIMPS=1.
 	ExitWhenOutOfWork=n
-where n is the number of seconds to wait before exiting.  I recommend setting n to 86400 or
-higher to give mprime time to send the last results and upload proof files to the server.
+where n is the maximum number of seconds to wait before exiting.  When using PrimeNet, mprime
+checks every 5 seconds and exits as soon as the last results have been sent and all proof
+files have been uploaded, or after n seconds, whichever comes first.  Set n high enough to
+give mprime time to send the last results and upload proof files to the server, such as 86400,
+because if the server cannot be reached mprime waits the full n seconds.  When not using
+PrimeNet there is nothing to send and mprime exits right away.
 
 WINDOWS ONLY:  When Tray Icon or No Icon is selected the "X" at the right of
 the title bar will minimize rather than exit.  You can make the program exit
