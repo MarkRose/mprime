@@ -1,0 +1,99 @@
+name: Container image
+
+# Builds docker/Dockerfile against any branch of this repository and publishes
+# ghcr.io/<owner>/mprime:<branch> and :sha-<commit>.
+#
+# This workflow lives on main only.  It runs after the Linux workflow succeeds on a push,
+# whichever branch that was, so branches such as p1-proxy need no copy of it (and no
+# rebase onto it).  workflow_run always uses the default branch's version of this
+# file, so changes to it only take effect once merged to main.
+on:
+  workflow_run:
+    workflows: [Linux]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        default: main
+
+jobs:
+  image:
+    # Only publish for pushes to this repository, never for pull requests or forks.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # The Dockerfile comes from main (the default branch)...
+      - uses: actions/checkout@v4
+
+      # ...and the source it builds from is the branch that just passed CI.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref }}
+          path: src
+          persist-credentials: false
+
+      - name: Work out image name and tags
+        id: meta
+        run: |
+          ref='${{ github.event.workflow_run.head_branch || inputs.ref }}'
+          sha=$(git -C src rev-parse HEAD)
+          branch=$(printf '%s' "$ref" | tr '/' '-' | tr -c 'A-Za-z0-9_.-\n' '-')
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "image=$image"
+            echo "ref=$ref"
+            echo "sha=$sha"
+            echo "tags=$image:$branch,$image:sha-${sha:0:7}"
+            echo "smoke=$image:sha-${sha:0:7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build and run it before publishing anything.
+      - name: Build (not pushed yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: ${{ steps.meta.outputs.smoke }}
+          build-args: |
+            SOURCE_REPO=${{ github.server_url }}/${{ github.repository }}
+            SOURCE_REF=${{ steps.meta.outputs.ref }}
+            SOURCE_SHA=${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          image='${{ steps.meta.outputs.smoke }}'
+          docker run --rm --read-only --cap-drop=ALL "$image" /opt/mprime/mprime -v
+          docker run --rm "$image" sh -c 'test "$(id -u)" = 1000 && ! ldd /opt/mprime/mprime | grep "not found" && test -s /opt/mprime/license.txt'
+
+      - name: Publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            SOURCE_REPO=${{ github.server_url }}/${{ github.repository }}
+            SOURCE_REF=${{ steps.meta.outputs.ref }}
+            SOURCE_SHA=${{ steps.meta.outputs.sha }}
+          cache-from: type=gha

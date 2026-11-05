@@ -1,0 +1,12 @@
+# Only what the Linux build needs goes into the build context.
+.git
+src/.git
+src/**/*.lib
+src/**/*.obj
+src/gwnum/amd64
+src/prime95
+src/winnt
+src/macosx
+src/macosx64
+src/os2
+src/linux
