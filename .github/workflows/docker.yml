@@ -49,7 +49,7 @@ jobs:
         run: |
           ref=$REF
           sha=$(git -C src rev-parse HEAD)
-          branch=$(printf '%s' "$ref" | tr '/' '-' | tr -c 'A-Za-z0-9_.-\n' '-')
+          branch=$(printf '%s' "$ref" | tr '/' '-' | tr -c -- '-A-Za-z0-9_.' '-')
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           {
             echo "image=$image"
