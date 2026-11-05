@@ -3548,7 +3548,9 @@ check_stop_code:
 	{
 		int	exit_wait_time = IniGetInt (INI_FILE, "ExitWhenOutOfWork", 0);
 		if (exit_wait_time) {
-			Sleep (exit_wait_time * 1000);
+			// Wait up to exit_wait_time seconds for the results and proof files to be sent to the server.  Exit sooner if there is nothing left to send
+			// (or immediately, if not using PrimeNet) or if the user is stopping the program.
+			for (int waited = 0; waited < exit_wait_time && !WORKERS_STOPPING && primenet_transfers_pending (); waited += 5) Sleep (5 * 1000);
 			return (0);
 		}
 	}

@@ -553,6 +553,7 @@ void spoolExistingResultsFile (void);
 int unreserve (unsigned long);
 void salvageCorruptSpoolFile (void);
 void proofUploader (void *);
+int primenet_transfers_pending (void);
 
 int LoadPrimeNet (void);
 void UnloadPrimeNet (void);
