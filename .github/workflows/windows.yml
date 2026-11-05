@@ -1,0 +1,112 @@
+name: Windows
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # windows-2022 ships Visual Studio 2022 (toolset v143, which prime95.vcxproj
+    # asks for) with the static MFC libraries (nafxcw.lib).
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      # prime95.vcxproj hardcodes dependency paths of the form \hwloc-win64-build-2.8.0\...
+      # with no drive letter, which resolve against the current drive.  On a runner
+      # that is the drive the workspace is on, so the dependencies go in its root.
+      - name: Locate dependency root
+        run: |
+          $root = (Split-Path $env:GITHUB_WORKSPACE -Qualifier) + '\'
+          "DEPROOT=$root" >> $env:GITHUB_ENV
+          # prime95.vcxproj also writes its pch and pdb to c:\temp
+          New-Item -ItemType Directory -Force C:\temp | Out-Null
+
+      # The proprietary security module is not part of the source; the Linux
+      # makefile touches empty stand-ins, and nothing does so on Windows.
+      - name: Create security module stubs
+        run: |
+          foreach ($f in 'security.h', 'security.c', 'secure5.c') {
+            if (-not (Test-Path $f)) { New-Item -ItemType File $f | Out-Null }
+          }
+
+      # The project's custom build step compiles an HTML help file with hhc, but
+      # the help sources (prime95/hlp) are not part of the source distribution
+      # and HTML Help Workshop is not installed on the runner.  Stand in for both
+      # so the step succeeds; the build has no help file.
+      - name: Stub out the help file build
+        run: |
+          New-Item -ItemType Directory -Force prime95\hlp | Out-Null
+          New-Item -ItemType File -Force prime95\hlp\prime95.chm | Out-Null
+          New-Item -ItemType Directory -Force C:\stubs | Out-Null
+          Set-Content C:\stubs\hhc.cmd '@exit /b 0'
+          "C:\stubs" >> $env:GITHUB_PATH
+
+      - name: hwloc 2.8.0
+        run: |
+          Invoke-WebRequest https://download.open-mpi.org/release/hwloc/v2.8/hwloc-win64-build-2.8.0.zip -OutFile hwloc.zip
+          Expand-Archive hwloc.zip $env:DEPROOT
+          Get-ChildItem "$($env:DEPROOT)hwloc-win64-build-2.8.0\lib\libhwloc.lib"
+
+      # curl.se only keeps the current release, so this is whatever is latest
+      # rather than the 8.5.0 the project file names.  The directory name is what
+      # the project file looks for; the API is the same.
+      - name: curl (win64-mingw)
+        run: |
+          $page = (Invoke-WebRequest https://curl.se/windows/).Content
+          $m = [regex]::Match($page, 'dl-[0-9.]+_[0-9]+/curl-[0-9._]+-win64-mingw\.zip')
+          if (-not $m.Success) { throw 'could not find the curl win64-mingw download' }
+          Invoke-WebRequest "https://curl.se/windows/$($m.Value)" -OutFile curl.zip
+          Expand-Archive curl.zip curl-extract
+          $dir = Get-ChildItem curl-extract -Directory | Select-Object -First 1
+          Move-Item $dir.FullName "$($env:DEPROOT)curl-8.5.0-win64-mingw"
+          Get-ChildItem "$($env:DEPROOT)curl-8.5.0-win64-mingw\lib\libcurl.dll.a"
+
+      # The project links \gmp64\libgmp-gw1.lib, George's own GMP build.  Use
+      # MSYS2's GMP instead: its libgmp.dll.a is a MinGW import library, the same
+      # kind of file the project already links for curl.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gmp
+          location: C:\msys2-gmp
+      - name: GMP
+        run: |
+          $g = Join-Path $env:DEPROOT 'gmp64'
+          New-Item -ItemType Directory -Force $g | Out-Null
+          Copy-Item C:\msys2-gmp\msys64\mingw64\include\gmp.h $g
+          Copy-Item C:\msys2-gmp\msys64\mingw64\lib\libgmp.dll.a "$g\libgmp-gw1.lib"
+          Copy-Item C:\msys2-gmp\msys64\mingw64\bin\libgmp-10.dll $g
+          Get-ChildItem $g
+
+      # Only boost/circular_buffer.hpp (and what it includes) is used.
+      - name: boost 1.76.0
+        run: |
+          Invoke-WebRequest https://archives.boost.io/release/1.76.0/source/boost_1_76_0.zip -OutFile boost.zip
+          Expand-Archive boost.zip $env:DEPROOT
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build prime95 (Release x64)
+        run: msbuild prime95\prime95.sln /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Collect
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item prime95\x64\Release\prime95.exe dist
+          Copy-Item "$($env:DEPROOT)gmp64\libgmp-10.dll" dist
+          Get-ChildItem "$($env:DEPROOT)curl-8.5.0-win64-mingw\bin" -Filter *.dll | Copy-Item -Destination dist
+          Get-ChildItem "$($env:DEPROOT)hwloc-win64-build-2.8.0\bin" -Filter *.dll | Copy-Item -Destination dist
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prime95-win64-${{ github.sha }}
+          path: dist
+          if-no-files-found: error

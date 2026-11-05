@@ -1,0 +1,41 @@
+name: Linux
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libhwloc-dev libcurl4-openssl-dev libgmp-dev libboost-dev
+
+      # linux64/makefile expects ../gwnum/gwnum.a and ../gwnum/polymult.a;
+      # gwnum/make64 derives gwnum.a from the prebuilt gwnum/linux64/gwnum.a.
+      - name: Build gwnum
+        run: make -C gwnum -f make64
+
+      # The stock makefile links hwloc and curl statically, which needs static
+      # libraries that distributions don't ship, and writes a huge link map
+      # (-Wl,-M).  Override both on the command line so the source stays untouched.
+      - name: Build mprime
+        working-directory: linux64
+        run: |
+          make LFLAGS="-Wl,-L/usr/local/lib" \
+               LIBS="../gwnum/gwnum.a ../gwnum/polymult.a -lm -lpthread -lhwloc -lcurl -lrt -lstdc++ -ldl -lgmp"
+          test -x mprime
+          ldd mprime
+          ./mprime -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mprime-linux64-${{ github.sha }}
+          path: linux64/mprime
+          if-no-files-found: error
