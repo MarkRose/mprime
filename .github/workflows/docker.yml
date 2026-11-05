@@ -43,8 +43,11 @@ jobs:
 
       - name: Work out image name and tags
         id: meta
+        env:
+          # Via the environment, not interpolated into the script: branch names are free text.
+          REF: ${{ github.event.workflow_run.head_branch || inputs.ref }}
         run: |
-          ref='${{ github.event.workflow_run.head_branch || inputs.ref }}'
+          ref=$REF
           sha=$(git -C src rev-parse HEAD)
           branch=$(printf '%s' "$ref" | tr '/' '-' | tr -c 'A-Za-z0-9_.-\n' '-')
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
