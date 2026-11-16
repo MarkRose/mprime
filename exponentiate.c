@@ -27,7 +27,7 @@ void simple_exponentiate (gwhandle *gwdata, gwnum x, uint64_t power)
 	if (power == 1) return;
 
 	scratch = gwalloc (gwdata);
-//BUG	if (scratch == NULL) goto oom;
+	if (scratch == NULL) return;
 
 	// Find the topmost bit in power
 	for (current_bit = 0x8000000000000000ULL; power < current_bit; current_bit >>= 1);
@@ -67,7 +67,13 @@ void exponentiate_window3 (gwhandle *gwdata, gwnum x, uint64_t *power, int array
 	x3 = gwalloc (gwdata);
 	x5 = gwalloc (gwdata);
 	x7 = gwalloc (gwdata);
-//BUG	if (x1 == NULL || x3 == NULL || x5 == NULL || x7 == NULL) goto oom;
+	if (x1 == NULL || x3 == NULL || x5 == NULL || x7 == NULL) {
+		if (x1 != NULL) gwfree (gwdata, x1);
+		if (x3 != NULL) gwfree (gwdata, x3);
+		if (x5 != NULL) gwfree (gwdata, x5);
+		if (x7 != NULL) gwfree (gwdata, x7);
+		return;
+	}
 
 	// Pre-compute x^1, x^3, x^5.  We delay computing x^7 until we are sure we will need it.
 	gwfft (gwdata, x, x1);
