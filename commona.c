@@ -34,6 +34,20 @@ void sanitizeString (
 #define STAT1a "The chance that the exponent you are testing will yield a %sprime is about 1 in %lld."
 #define STAT3 "No work queued up.\n"
 
+/* Append a string to the status message, truncating it rather than writing past end.  Returns the new end of the message. */
+
+static char *status_strcat (
+	char	*p,			/* Current end of the message (always null-terminated) */
+	const char *end,		/* One past the end of the message buffer */
+	const char *s)
+{
+	size_t	len = strlen (s);
+	if (len >= (size_t) (end - p)) len = (size_t) (end - p) - 1;
+	memcpy (p, s, len);
+	p[len] = 0;
+	return (p + len);
+}
+
 void rangeStatusMessage (
 	char	*buf,
 	unsigned int buflen)		/* Originally coded for a 2000 character buffer */
@@ -41,7 +55,7 @@ void rangeStatusMessage (
 	unsigned int tnum, ll_and_prp_cnt, lines_per_worker;
 	int	mersennes;		/* TRUE if only testing Mersenne numbers */
 	double	prob, est;
-	char	*orig_buf;
+	char	*orig_buf, *end, tmp[200];
 
 // Reserve 120 characters to output final summary message
 #define room_in_buf_for(count)		(buflen - (unsigned int)(buf - orig_buf) > count + 120)
@@ -55,11 +69,12 @@ void rangeStatusMessage (
 	lines_per_worker = (unsigned int) IniGetInt (INI_FILE, "StatusLines", buflen / 62) / NUM_WORKERS;
 	if (lines_per_worker < 3) lines_per_worker = 3;
 	orig_buf = buf;
+	end = buf + buflen;
 	ll_and_prp_cnt = 0;
 	prob = 0.0;
 	mersennes = TRUE;
-	strcpy (buf, STAT0);
-	buf += strlen (buf);
+	*buf = 0;
+	buf = status_strcat (buf, end, STAT0);
 
 /* Loop over all workers */
 
@@ -77,8 +92,8 @@ void rangeStatusMessage (
 
 	    if (NUM_WORKERS > 1) {
 		if (room_in_buf_for (15)) {
-		    sprintf (buf, "[Worker #%d]\n", tnum+1);
-		    buf += strlen (buf);
+		    sprintf (tmp, "[Worker #%d]\n", tnum+1);
+		    buf = status_strcat (buf, end, tmp);
 		}
 		lines_output++;
 	    }
@@ -133,74 +148,75 @@ void rangeStatusMessage (
 
 		if (!room_in_buf_for (80) || lines_output >= lines_per_worker-1) {
 			if (! truncated_status_msg) {
-				if (room_in_buf_for (10)) {
-					strcpy (buf, "More...\n");
-					buf += strlen (buf);
-				}
+				if (room_in_buf_for (10)) buf = status_strcat (buf, end, "More...\n");
 				truncated_status_msg = TRUE;
 			}
 			continue;
 		}
 
-/* Add the exponent to the output message */
+/* Add the exponent to the output message.  Every append is bounded by the end of the buffer: the margin check above */
+/* does not cover the unbounded ECM file name, nor the per-worker headers when there are many workers. */
 
 		if (w->n) {
-			gw_as_string (buf, w->k, w->b, w->n, w->c);
-			buf += strlen (buf);
-			if (w->work_type == WORK_PRP && w->known_factors) {
-				strcpy (buf, "/known_factors");
-				buf += strlen (buf);
-			}
-			strcpy (buf, ", ");
-			buf += strlen (buf);
+			gw_as_string (tmp, w->k, w->b, w->n, w->c);
+			buf = status_strcat (buf, end, tmp);
+			if (w->work_type == WORK_PRP && w->known_factors)
+				buf = status_strcat (buf, end, "/known_factors");
+			buf = status_strcat (buf, end, ", ");
 		}
 
 		if (w->work_type == WORK_ECM) {
-			if (w->gmp_ecm_file) snprintf (buf, buflen - (size_t) (buf - orig_buf), "ECM stage 2 on file %s", w->gmp_ecm_file);
-			else sprintf (buf, "ECM %d curve%s B1=%" PRIu64, w->curves_to_do, w->curves_to_do == 1 ? "" : "s",
+			if (w->gmp_ecm_file) {
+				buf = status_strcat (buf, end, "ECM stage 2 on file ");
+				buf = status_strcat (buf, end, w->gmp_ecm_file);
+				tmp[0] = 0;
+			}
+			else sprintf (tmp, "ECM %d curve%s B1=%" PRIu64, w->curves_to_do, w->curves_to_do == 1 ? "" : "s",
 				      w->B1 * IniGetInt (INI_FILE, "ECMBoundsMultiplier", 1));
 		}
 		else if (w->work_type == WORK_PMINUS1)
-			sprintf (buf, "P-1 B1=%" PRIu64, w->B1);
+			sprintf (tmp, "P-1 B1=%" PRIu64, w->B1);
 		else if (w->work_type == WORK_PPLUS1)
-			sprintf (buf, "P+1 B1=%" PRIu64, w->B1);
+			sprintf (tmp, "P+1 B1=%" PRIu64, w->B1);
 		else if (w->work_type == WORK_FACTOR)
-			sprintf (buf, "factor from 2^%d to 2^%d", (int) w->sieve_depth, (int) w->factor_to);
+			sprintf (tmp, "factor from 2^%d to 2^%d", (int) w->sieve_depth, (int) w->factor_to);
 		else
-			strcpy (buf, w->work_type == WORK_PFACTOR ? "P-1" :
+			strcpy (tmp, w->work_type == WORK_PFACTOR ? "P-1" :
 				     w->work_type == WORK_TEST ||
 				     w->work_type == WORK_ADVANCEDTEST ? "Lucas-Lehmer test" :
 				     w->work_type == WORK_DBLCHK ? "Double-check" :
 				     w->work_type == WORK_CERT ? "Certify" :
 				     w->prp_dblchk ? "PRPDC" : "PRP");
-		buf += strlen (buf);
+		buf = status_strcat (buf, end, tmp);
 
 		time (&this_time);
 		this_time += (time_t) est;
-		if (this_time < 2147483640.0) {
+		if (this_time < 2147483640.0 && ctime (&this_time) != NULL) {	/* ctime returns NULL for an absurd (e.g. negative) estimate */
 			strcpy (timebuf, ctime (&this_time));
 			safe_strcpy (timebuf+16, timebuf+19);
 		} else
 			strcpy (timebuf, "after Jan 19 2038\n");
-		sprintf (buf, ", %s", timebuf);
-		buf += strlen (buf);
+		buf = status_strcat (buf, end, ", ");
+		buf = status_strcat (buf, end, timebuf);
 		lines_output++;
 	    }
 
 /* Format more of the message */
 
-	    if (est == 0.0 && ! truncated_status_msg) {
-		strcpy (buf, STAT3);
-		buf += strlen (buf);
-	    }
+	    if (est == 0.0 && ! truncated_status_msg)
+		buf = status_strcat (buf, end, STAT3);
 	}
 
 /* Print message estimating our probability of success */
 
-	if (ll_and_prp_cnt == 1)
-		sprintf (buf+strlen(buf), STAT1a, mersennes ? "Mersenne " : "", (long long) (1.0 / prob));
-	if (ll_and_prp_cnt > 1)
-		sprintf (buf+strlen(buf), STAT1, ll_and_prp_cnt, mersennes ? "Mersenne " : "", (long long) (1.0 / prob));
+	if (ll_and_prp_cnt == 1) {
+		sprintf (tmp, STAT1a, mersennes ? "Mersenne " : "", (long long) (1.0 / prob));
+		buf = status_strcat (buf, end, tmp);
+	}
+	if (ll_and_prp_cnt > 1) {
+		sprintf (tmp, STAT1, ll_and_prp_cnt, mersennes ? "Mersenne " : "", (long long) (1.0 / prob));
+		buf = status_strcat (buf, end, tmp);
+	}
 }
 
 /* Return the suggested minimum number of cores that should be used for a work preference. */

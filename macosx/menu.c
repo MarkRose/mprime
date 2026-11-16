@@ -624,7 +624,7 @@ void test_status (void)
 {
 	char	buf[8000];
 
-	rangeStatusMessage (buf, sizeof (buf));
+	rangeStatusMessage (buf, sizeof (buf) - 1);	/* Leave room for the newline appended below */
 	strcat (buf, "\n");
 	outputLongLine (buf);
 }
