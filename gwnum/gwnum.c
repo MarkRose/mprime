@@ -2276,7 +2276,11 @@ int gwsetup (
 
 /* For future messages, format the input number as a string */
 
-	gw_as_string (gwdata->GWSTRING_REP, orig_k, b, orig_n, c);
+	{
+		char	kbnc[80];	/* gw_as_string can return up to 79 characters, more than GWSTRING_REP holds */
+		gw_as_string (kbnc, orig_k, b, orig_n, c);
+		snprintf (gwdata->GWSTRING_REP, sizeof (gwdata->GWSTRING_REP), "%s", kbnc);
+	}
 
 /* Return success */
 
@@ -2579,10 +2583,10 @@ int gwsetup_general_mod_giant (
 		error_code = gwsetup (gwdata, k, 2, n, c);
 		if (error_code) return (error_code);
 		if (d != 1) {
-			char	buf[60];
+			char	buf[sizeof (gwdata->GWSTRING_REP)];
 			strcpy (buf, gwdata->GWSTRING_REP);
-			if (isdigit (buf[0])) sprintf (gwdata->GWSTRING_REP, "(%s)/%lu", buf, d);
-			else sprintf (gwdata->GWSTRING_REP, "%s/%lu", buf, d);
+			if (isdigit (buf[0])) snprintf (gwdata->GWSTRING_REP, sizeof (gwdata->GWSTRING_REP), "(%s)/%lu", buf, d);
+			else snprintf (gwdata->GWSTRING_REP, sizeof (gwdata->GWSTRING_REP), "%s/%lu", buf, d);
 		}
 		return (0);
 	}
@@ -8285,19 +8289,21 @@ void gwfft_description (
 		strcat (buf, " using large pages");
 }
 
-/* Return a string representation of a k/b/n/c combination */
+/* Return a string representation of a k/b/n/c combination.  Callers may pass k values that gwsetup will reject (e.g. straight */
+/* from worktodo.txt), and "%.0f" of a huge double is over 300 digits.  Values of 1e16 or more are printed with "%.10g" so the */
+/* output never exceeds 79 characters: 17 (k) + "*" + 20 (b) + "^" + 20 (n) + sign + 19 (|c|) = 79, plus the terminating null. */
 
 void gw_as_string (
-	char	*buf,		/* Buffer to return string in */
+	char	*buf,		/* Buffer to return string in (at least 80 bytes) */
 	double	k,		/* K in K*B^N+C */
 	unsigned long b,	/* B in K*B^N+C */
 	unsigned long n,	/* N in K*B^N+C */
 	signed long c)		/* C in K*B^N+C */
 {
 	if (n == 0)
-		sprintf (buf, "%.0f", k + c);
+		sprintf (buf, fabs (k + c) < 1.0e16 ? "%.0f" : "%.10g", k + c);
 	else if (k != 1.0)
-		sprintf (buf, "%.0f*%lu^%lu%c%lu", k, b, n, c < 0 ? '-' : '+', (unsigned long) labs (c));
+		sprintf (buf, fabs (k) < 1.0e16 ? "%.0f*%lu^%lu%c%lu" : "%.10g*%lu^%lu%c%lu", k, b, n, c < 0 ? '-' : '+', (unsigned long) labs (c));
 	else if (b == 2 && c == -1)
 		sprintf (buf, "M%lu", n);
 	else {

@@ -123,7 +123,6 @@ void writeIniFile (			/* Write a changed INI file to disk */
 {
 	int	fd;
 	unsigned int j;
-	char	buf[2000];
 
 /* Delay writing the file unless this INI file is written */
 /* to immediately */
@@ -138,12 +137,13 @@ void writeIniFile (			/* Write a changed INI file to disk */
 	fd = _open (p->filename, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT, CREATE_FILE_ACCESS);
 	if (fd < 0) return;
 	for (j = 0; j < p->num_lines; j++) {
-		if (p->lines[j]->line_type == INI_LINE_COMMENT || p->lines[j]->line_type == INI_LINE_HEADER) {
-			snprintf (buf, sizeof (buf), "%s\n", p->lines[j]->value);
-		} else {
-			snprintf (buf, sizeof (buf), "%s=%s\n", p->lines[j]->keyword, p->lines[j]->value);
+		/* Write the pieces directly: a fixed-size line buffer would truncate long values (and drop the newline) */
+		if (p->lines[j]->line_type != INI_LINE_COMMENT && p->lines[j]->line_type != INI_LINE_HEADER) {
+			(void) _write (fd, p->lines[j]->keyword, (unsigned int) strlen (p->lines[j]->keyword));
+			(void) _write (fd, "=", 1);
 		}
-		(void) _write (fd, buf, (unsigned int) strlen (buf));
+		(void) _write (fd, p->lines[j]->value, (unsigned int) strlen (p->lines[j]->value));
+		(void) _write (fd, "\n", 1);
 	}
 	p->dirty = 0;
 	_close (fd);
@@ -605,9 +605,9 @@ long IniSectionGetTimedInt (		/* Get a time-sensitive integer value from specifi
 	long	default_val,
 	unsigned int *seconds)		/* Return length of time this timed INI setting is good for. */
 {
-	char	buf[20], defval[20];
+	char	buf[21], defval[21];	/* "%ld" of LONG_MIN is 20 characters */
 	sprintf (defval, "%ld", default_val);
-	IniSectionGetTimedString (filename, section, keyword, buf, 20, defval, seconds);
+	IniSectionGetTimedString (filename, section, keyword, buf, sizeof (buf), defval, seconds);
 	return (atol (buf));
 }
 
@@ -625,7 +625,7 @@ void IniSectionWriteInt (		/* Write an integer value to specified section of the
 	const char *keyword,
 	long	val)
 {
-	char	buf[20];
+	char	buf[21];		/* "%ld" of LONG_MIN is 20 characters */
 	sprintf (buf, "%ld", val);
 	IniSectionWriteString (filename, section, keyword, buf);
 }
@@ -727,9 +727,9 @@ float IniSectionGetTimedFloat (		/* Get a time-sensitive floating point value fr
 	float	default_val,
 	unsigned int *seconds)		/* Return length of time this timed INI setting is good for. */
 {
-	char	buf[20], defval[20];
+	char	buf[48], defval[48];	/* "%f" of -FLT_MAX is 47 characters */
 	sprintf (defval, "%f", default_val);
-	IniSectionGetTimedString (filename, section, keyword, buf, 20, defval, seconds);
+	IniSectionGetTimedString (filename, section, keyword, buf, sizeof (buf), defval, seconds);
 	return ((float) atof (buf));
 }
 

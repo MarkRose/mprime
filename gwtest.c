@@ -1159,7 +1159,7 @@ int test_randomly (
 	unsigned int b;
 	int	c;
 	unsigned int n;
-	char	buf[200], fft_desc[100], SPECIFIC_K[20], SPECIFIC_C[20];
+	char	buf[200], fft_desc[200], SPECIFIC_K[20], SPECIFIC_C[20];	/* fft_desc: gwfft_description can return 179 characters */
 	int	MAX_THREADS, MIN_K_BITS, MAX_K_BITS;
 	int	MAX_C_BITS_FOR_SMALL_K, MAX_C_BITS_FOR_LARGE_K;
 	int	SPECIFIC_B, SPECIFIC_N, SPECIFIC_L2_CACHE, SPECIFIC_THREADS, SPECIFIC_FFTLEN;
@@ -1309,13 +1309,13 @@ again:		gwinit (&gwdata);
 		OutputBoth (thread_num, buf);
 		gwfft_description (&gwdata, fft_desc);
 		if (gwfftlen (&gwdata) < 140000)
-			sprintf (buf,
+			snprintf (buf, sizeof (buf),
 				 "Using %s, virtual_bits_per_word=%.5g/%.5g\n",
 				 fft_desc,
 				 virtual_bits_per_word (&gwdata),
 				 gwdata.fft_max_bits_per_word);
 		else
-			sprintf (buf, "Using %s, virtual_bits_per_word=%.5g/%.5g, L2_cache_size=%d\n",
+			snprintf (buf, sizeof (buf), "Using %s, virtual_bits_per_word=%.5g/%.5g, L2_cache_size=%d\n",
 				 fft_desc,
 				 virtual_bits_per_word (&gwdata),
 				 gwdata.fft_max_bits_per_word,
