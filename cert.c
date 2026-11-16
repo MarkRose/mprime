@@ -129,7 +129,7 @@ int cert (
 	double	reallymaxerr = 0.0;
 	readSaveFileState read_save_file_state; /* Manage savefile names during reading */
 	writeSaveFileState write_save_file_state; /* Manage savefile names during writing */
-	char	filename[32];
+	char	filename[SAVE_FILENAME_SIZE];
 	char	buf[1000], JSONbuf[4000], fft_desc[200];
 	double	allowable_maxerr, output_adjustment, title_adjustment;
 	char	string_rep[80];
@@ -537,7 +537,7 @@ int cert (
 		pkt.shift_count = cs.units_bit;
 		pkt.fftlen = gwfftlen (&cs.gwdata);
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 

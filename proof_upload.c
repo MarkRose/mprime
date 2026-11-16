@@ -24,8 +24,12 @@ void archiveOrDelete (FILE **fd, char *filename, char fileMD5[33])
 		int	bytes_read;
 		char	archiveMD5[33];
 
-		// Create the archive filename and create it
-		DirPlusFilename (archive_filename, filename);
+		// Create the archive filename and create it.  Like a create failure, a name that does not fit keeps the proof file.
+		if (!DirPlusFilename (archive_filename, sizeof (archive_filename), filename)) {
+			snprintf (buf, sizeof (buf), "ProofArchiveDir is too long to archive proof file %s\n", filename);
+			OutputBoth (COMM_THREAD_NUM, buf);
+			return;
+		}
 		fdout = fopen (archive_filename, "wb");
 		if (fdout == NULL) {
 			sprintf (buf, "Unable to create archive proof file %s\n", archive_filename);

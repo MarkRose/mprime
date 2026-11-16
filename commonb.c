@@ -3247,7 +3247,7 @@ void LauncherDispatch (void *arg)
 		int	totaltime;
 
 		title (ld->thread_num, "Waiting to start");
-		sprintf (buf, "Waiting %d seconds to stagger worker starts.\n", ld->delay_amount);
+		snprintf (buf, sizeof (buf), "Waiting %d seconds to stagger worker starts.\n", ld->delay_amount);
 		OutputStr (ld->thread_num, buf);
 
 		for (totaltime = 0; totaltime < ld->delay_amount * 1000; totaltime += 100) {
@@ -3609,7 +3609,7 @@ int testUniqueFileName (
 {
 static	int	USED_FILENAMES_MUTEX_INITIALIZED = FALSE;
 static	gwmutex	USED_FILENAMES_MUTEX;
-static	char	USED_FILENAMES[MAX_NUM_WORKERS][32];
+static	char	USED_FILENAMES[MAX_NUM_WORKERS][SAVE_FILENAME_SIZE];
 	int	i;
 
 /* Initialize the lock and used file array */
@@ -3645,7 +3645,7 @@ void uniquifySaveFile (
 	int	thread_num,
 	char	*filename)
 {
-	char	original_filename[32];
+	char	original_filename[SAVE_FILENAME_SIZE];
 	int	i;
 
 /* Remember the orignal save file name */
@@ -5448,8 +5448,8 @@ int primeFactor (
 					/* at a time */
 	readSaveFileState read_save_file_state; /* Manage savefile names during reading */
 	writeSaveFileState write_save_file_state; /* Manage savefile names during writing */
-	char	filename[32];
-	char	buf[200], JSONbuf[4000], str[80];
+	char	filename[SAVE_FILENAME_SIZE];
+	char	buf[201], JSONbuf[4000], str[80];	/* buf: formatMsgForResultsFile returns up to 200 characters plus the null */
 	double	timers[2];
 
 /* Init */
@@ -5607,7 +5607,7 @@ begin:	factor_found = 0;
 
 	    end_bits = (bits < 60) ? 60 : bits + 1;
 	    if (end_bits > test_bits) end_bits = test_bits;
-	    sprintf (w->stage, "TF%d", end_bits);
+	    snprintf (w->stage, sizeof (w->stage), "TF%d", end_bits);
 
 /* Compute the ending point for each pass */
 
@@ -5866,7 +5866,7 @@ begin:	factor_found = 0;
 				strcpy (pkt.factor, str);
 				pkt.start_bits = (bits < report_bits) ? (unsigned int) w->sieve_depth : bits;
 				pkt.done = !find_smaller_factor;
-				strcpy (pkt.JSONmessage, JSONbuf);
+				JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 				spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 			}
 		} while (getAnotherFactorIfAny (&facdata));
@@ -5951,7 +5951,7 @@ nextpass:	;
 			pkt.start_bits = start_bits;
 			pkt.end_bits = end_bits;
 			pkt.done = (w->work_type == WORK_FACTOR) && (end_bits >= test_bits);
-			strcpy (pkt.JSONmessage, JSONbuf);
+			JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 			spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 		}
 	    }
@@ -6285,7 +6285,7 @@ int make_error_count_message (
 	int	count_repeatable, count_suminp, count_roundoff, count_illegal_sumout, count_total;
 	int	count_jacobi, count_gerbicz, count_bad_errors;
 	int	force_high_confidence;
-	char	local_buf[400], counts_buf[200], confidence[25];
+	char	local_buf[400], counts_buf[256], confidence[25];	/* counts_buf: all error counts saturated is 223 characters plus null */
 
 /* Massage input argument */
 
@@ -6623,7 +6623,7 @@ int prime (
 	unsigned long iters;
 	readSaveFileState read_save_file_state; /* Manage savefile names during reading */
 	writeSaveFileState write_save_file_state; /* Manage savefile names during writing */
-	char	filename[32];
+	char	filename[SAVE_FILENAME_SIZE];
 	double	timers[2];
 	double	inverse_p;
 	double	reallyminerr = 1.0;
@@ -7189,7 +7189,7 @@ begin:	gwinit (&lldata.gwdata);
 /* Write a save file every INTERIM_FILES iterations. */
 
 		if (interim_file) {
-			char	interimfile[32];
+			char	interimfile[80];	/* tempFileName (<= 49 chars) + "." + %03ld (<= 20 chars) + null */
 			writeSaveFileState state;
 			sprintf (interimfile, "%s.%03ld", filename, counter / INTERIM_FILES);
 			writeSaveFileStateInit (&state, interimfile, 0);
@@ -7295,7 +7295,7 @@ begin:	gwinit (&lldata.gwdata);
 		sprintf (pkt.error_count, "%08lX", error_count);
 		pkt.fftlen = gwfftlen (&lldata.gwdata);
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 
@@ -7813,7 +7813,7 @@ int selfTestInternal (
 /* Output start message */
 
 		gwfft_description (&lldata.gwdata, fft_desc);
-		sprintf (buf, SELF1, iter, addl_msg, ll_iters, in_place ? "in-place " : "", p, fft_desc);
+		snprintf (buf, sizeof (buf), SELF1, iter, addl_msg, ll_iters, in_place ? "in-place " : "", p, fft_desc);
 		OutputStr (thread_num, buf);
 
 /* Allocate gwnums to eat up the available memory */
@@ -8624,7 +8624,7 @@ int primeSieveTest (
 			if (fachi >= 268435456 ||
 			    (fachi >= 4194304 && !(CPU_FLAGS & CPU_FMA3)) ||
 			    (fachi >= 16384 && !(CPU_FLAGS & CPU_SSE2))) {
-				sprintf (buf, "%ld %s factor too big.\n", p, fac);
+				snprintf (buf, sizeof (buf), "%ld %s factor too big.\n", p, fac);
 				OutputBoth (thread_num, buf);
 				goto nextp;
 			}
@@ -8633,7 +8633,7 @@ int primeSieveTest (
 /* See if p is too small (less than 2^44) */
 
 		if (fachi == 0 && facmid < 0x1000) {
-			sprintf (buf, "%ld %s factor too small.\n", p, fac);
+			snprintf (buf, sizeof (buf), "%ld %s factor too small.\n", p, fac);
 			OutputBoth (thread_num, buf);
 			goto nextp;
 		}
@@ -8676,7 +8676,7 @@ int primeSieveTest (
 			return (stop_reason);
 		}
 		if (fachi >= 16384 && !(facdata.asm_data->cpu_flags & (CPU_SSE2 | CPU_AVX2 | CPU_FMA3 | CPU_AVX512F))) {
-			sprintf (buf, "%ld %s factor too big.\n", p, fac);
+			snprintf (buf, sizeof (buf), "%ld %s factor too big.\n", p, fac);
 			OutputBoth (thread_num, buf);
 			factorDone (&facdata);
 			goto nextp;
@@ -8705,9 +8705,9 @@ int primeSieveTest (
 				if (facdata.asm_data->FACHSW == fachi &&
 				    facdata.asm_data->FACMSW == facmid &&
 				    facdata.asm_data->FACLSW == faclo) {
-					sprintf (buf, "%ld %s factored OK.\n", p, fac);
+					snprintf (buf, sizeof (buf), "%ld %s factored OK.\n", p, fac);
 				} else {
-					sprintf (buf, "%ld %s different factor found.\n", p, fac);
+					snprintf (buf, sizeof (buf), "%ld %s different factor found.\n", p, fac);
 				}
 				OutputSomewhere (thread_num, buf);
 				factorDone (&facdata);
@@ -8721,7 +8721,7 @@ int primeSieveTest (
 
 /* Uh oh. */
 
-bad:		sprintf (buf, "%ld %s factor not found.\n", p, fac);
+bad:		snprintf (buf, sizeof (buf), "%ld %s factor not found.\n", p, fac);
 		OutputBoth (thread_num, buf);
 
 /* If an escape key was hit, write out the results and return */
@@ -10930,7 +10930,7 @@ int generateProofFile (
 	char	proof_hash[33])		/* Returned MD5 hash of the entire proof file */
 {
 	int	proofgen_waits;
-	char	buf[512], filename[32], proof_filename[500], tmp_proof_filename[504];
+	char	buf[512], filename[SAVE_FILENAME_SIZE], proof_filename[500], tmp_proof_filename[504];
 
 // Mihai's explanation for how a proof construction works for proof power N:
 //	Hashes must all be derived from the final residue B
@@ -11028,25 +11028,34 @@ int generateProofFile (
 		MD5Update (&context, buf, (unsigned int) strlen (buf));
 
 		// Output number.  Enclose non-Mersennes with known factors in parentheses.  Append known factors.
-		char *bigbuf = (char *) buf;
-		if (w->known_factors != NULL) bigbuf = (char *) malloc (512 + strlen (w->known_factors));
-		sprintf (bigbuf, "NUMBER=");
-		if ((w->k != 1.0 || w->c != -1) && w->known_factors != NULL) strcat (bigbuf, "(");
-		strcat (bigbuf, gwmodulo_as_string (gwdata));
-		if ((w->k != 1.0 || w->c != -1) && w->known_factors != NULL) strcat (bigbuf, ")");
+		// The known factors list comes from worktodo.txt and can be far longer than buf, so size this line to fit:
+		// "NUMBER=" + "(" + number + ")" + "/" + known factors + "\n" + null.
+		{
+		char	*numline;
+		numline = (char *) malloc (strlen (gwmodulo_as_string (gwdata)) + (w->known_factors != NULL ? strlen (w->known_factors) : 0) + 12);
+		if (numline == NULL) {
+			OutputBoth (ps->thread_num, "Error allocating memory for proof file header.\n");
+			goto pfail;
+		}
+		sprintf (numline, "NUMBER=");
+		if ((w->k != 1.0 || w->c != -1) && w->known_factors != NULL) strcat (numline, "(");
+		strcat (numline, gwmodulo_as_string (gwdata));
+		if ((w->k != 1.0 || w->c != -1) && w->known_factors != NULL) strcat (numline, ")");
 		if (w->known_factors != NULL) {		// Output known factors list
 			char	*p;
-			sprintf (bigbuf + strlen (bigbuf), "/%s", w->known_factors);
-			while ((p = strchr (bigbuf, ',')) != NULL) *p = '/';
+			sprintf (numline + strlen (numline), "/%s", w->known_factors);
+			while ((p = strchr (numline, ',')) != NULL) *p = '/';
 		}
-		strcat (bigbuf, "\n");
-		if (_write (fdout, bigbuf, (unsigned int) strlen (bigbuf)) != (int) strlen (bigbuf)) {
+		strcat (numline, "\n");
+		if (_write (fdout, numline, (unsigned int) strlen (numline)) != (int) strlen (numline)) {
+			free (numline);
 			OutputBoth (ps->thread_num, "Error writing proof file header.\n");
 			OutputBothErrno (ps->thread_num);
 			goto pfail;
 		}
-		MD5Update (&context, bigbuf, (unsigned int) strlen (bigbuf));
-		if (w->known_factors != NULL) free (bigbuf);
+		MD5Update (&context, numline, (unsigned int) strlen (numline));
+		free (numline);
+		}
 
 		// Get the header size
 		proof_header_size = _lseeki64 (fdout, 0, SEEK_CUR);
@@ -11762,13 +11771,13 @@ int prp (
 	double	best_iteration_time;
 	readSaveFileState read_save_file_state; /* Manage savefile names during reading */
 	writeSaveFileState write_save_file_state; /* Manage savefile names during writing */
-	char	filename[32];
+	char	filename[SAVE_FILENAME_SIZE];
 	char	buf[1000], JSONbuf[4000], fft_desc[200];
 	unsigned long last_counter = 0xFFFFFFFF;/* Iteration of last error */
 	int	maxerr_recovery_mode = 0;	/* Big roundoff err rerun */
 	double	last_maxerr = 0.0;
 	double	allowable_maxerr, output_adjustment, title_adjustment;
-	char	string_rep[80];
+	char	string_rep[104];		/* "(" + GWSTRING_REP (<= 59) + ")" + "/" + known factors (< 40) + null = 101 */
 	int	string_rep_truncated;
 	int	error_count_messages;
 	unsigned long restart_error_count = 0;	/* On a restart, use this error count rather than the one from a save file */
@@ -12033,7 +12042,7 @@ begin:	N = exp = NULL;
 /* If N is one, the number is already fully factored.  Print an error message. */
 
 	if (isone (N)) {
-		sprintf (buf, "PRP test of one is not allowed.  Input string was: %s\n", string_rep);
+		sprintf (buf, "PRP test of one is not allowed.  Input string was: %s\n", gwmodulo_as_string (&gwdata));
 		OutputBoth (thread_num, buf);
 		stop_reason = STOP_WORK_UNIT_COMPLETE;
 		goto exit;
@@ -12206,7 +12215,11 @@ begin:	N = exp = NULL;
 // Generate the proof residues file name
 
 		IniGetString (INI_FILE, "ProofResiduesDir", ps.residues_filename, sizeof (ps.residues_filename), NULL);
-		DirPlusFilename (ps.residues_filename, filename);
+		if (!DirPlusFilename (ps.residues_filename, sizeof (ps.residues_filename) - strlen (".residues"), filename)) {
+			OutputBoth (thread_num, "ProofResiduesDir is too long to create the proof interim residues file name.\n");
+			stop_reason = STOP_FATAL_ERROR;
+			goto exit;
+		}
 		strcat (ps.residues_filename, ".residues");
 
 // James suggests creating and allocating the proof residues file after outputting a message letting the user know the file's size.
@@ -13116,7 +13129,7 @@ OutputStr (thread_num, "Iteration failed.\n");
 /* Write a save file every INTERIM_FILES iterations. */
 
 		if (interim_file) {
-			char	interimfile[32];
+			char	interimfile[80];	/* tempFileName (<= 49 chars) + "." + %03ld (<= 20 chars) + null */
 			writeSaveFileState state;
 			sprintf (interimfile, "%s.%03ld", filename, ps.counter / INTERIM_FILES);
 			writeSaveFileStateInit (&state, interimfile, 0);
@@ -13290,7 +13303,7 @@ pushg(&gwdata.gdata, 2);}
 			strcpy (pkt.proof_hash, proof_hash);
 		}
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 

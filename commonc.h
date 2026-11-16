@@ -485,9 +485,13 @@ void guess_pminus1_bounds (int, double, unsigned long, unsigned long, signed lon
 
 void strupper (char *);
 int isHex (const char *);
+/* Size of buffers holding a tempFileName save file name.  The worst case from worktodo.txt values is 49 characters: */
+/* "p" + 13 (%g of fmod(k,1e6), e.g. "-4.94066e-324") + "_" + 20 (%ld of n) + "_" + 4 ("-808") + "." + 8 (extension). */
+/* Leave room for uniquifySaveFile's "_1024" suffix and ECM's ".ftree" suffix: 49 + 5 + 6 + null = 61. */
+#define SAVE_FILENAME_SIZE	64
 void tempFileName (struct work_unit *, char *);
 int fileExists (const char *);
-void DirPlusFilename (char *, const char *);
+int DirPlusFilename (char *, size_t, const char *);
 
 int read_array (int fd, char *buf, size_t len, uint32_t *sum);
 int write_array (int fd, const char *buf, size_t len, uint32_t *sum);
@@ -528,6 +532,7 @@ void JSONaddExponent (char *JSONbuf, struct work_unit *w);
 void JSONaddExponentKnownFactors (char *JSONbuf, struct work_unit *w);
 void JSONaddProgramTimestamp (char *JSONbuf);
 void JSONaddUserComputerAID (char *JSONbuf, struct work_unit *w);
+void JSONcopyToPacket (char *dest, size_t destsize, const char *JSONbuf);
 
 /* Routines called by common routines */
 

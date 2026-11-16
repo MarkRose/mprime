@@ -1265,7 +1265,7 @@ void ini_error_handler (
 	const char *line_text)
 {
 	char	buf[1200];
-	sprintf (buf, "File %s, line number %d is not valid: %s\n", filename, line_number, line_text);
+	snprintf (buf, sizeof (buf), "File %s, line number %d is not valid: %s\n", filename, line_number, line_text);
 	OutputSomewhere (MAIN_THREAD_NUM, buf);
 }
 
@@ -2225,6 +2225,7 @@ int PTOHasOptionChanged (
 
 void timestamp (
 	char	*buf,
+	size_t	bufsize,
 	int	type)		// 0=screen, 1=logfile
 {
 	char	user_defined_fmt[100];
@@ -2254,10 +2255,11 @@ void timestamp (
 		fmtstr = user_defined_fmt;
 	}
 
-	/* Format local time or UTC time */
+	/* Format local time or UTC time.  A user-defined format can expand past bufsize, in which case */
+	/* strftime returns 0 and leaves the buffer contents undefined (possibly unterminated). */
 	time (&this_time);
-	if (utc) strftime (buf, 80, fmtstr, gmtime (&this_time));
-	else strftime (buf, 80, fmtstr, localtime (&this_time));
+	if (utc) { if (strftime (buf, bufsize, fmtstr, gmtime (&this_time)) == 0) *buf = 0; }
+	else { if (strftime (buf, bufsize, fmtstr, localtime (&this_time)) == 0) *buf = 0; }
 }
 
 /* Intercept output to the screen for optional logging to a file */
@@ -2373,9 +2375,9 @@ void OutputStr (
 /* Format a timestamp.  Prefix every line in the input buffer with the timestamp. */
 
 	if (TIMESTAMPING) {
-		char	tmpbuf[200], fmtbuf[202];
+		char	tmpbuf[200], fmtbuf[203];	/* "[" + tmpbuf + "] " */
 
-		timestamp (tmpbuf, 0);
+		timestamp (tmpbuf, sizeof (tmpbuf), 0);
 		sprintf (fmtbuf, "[%s] ", tmpbuf);
 
 /* Output the prefix for every line in the buffer */ 
@@ -2487,6 +2489,23 @@ void JSONaddUserComputerAID (
 	if (w != NULL && w->morejsoninfo != NULL) strcat (JSONbuf, w->morejsoninfo);
 }
 
+/* Copy a JSON result into a server packet's JSONmessage field.  JSONbuf (4000 bytes, e.g. with a long known-factors list) */
+/* can be longer than the field.  Truncated JSON would be garbage to the server, so leave the field empty instead; the packet */
+/* then carries the plain-text result message, as the server accepts from older clients.  The full JSON is in results.json.txt. */
+
+void JSONcopyToPacket (
+	char	*dest,
+	size_t	destsize,
+	const char *JSONbuf)
+{
+	if (strlen (JSONbuf) < destsize)
+		strcpy (dest, JSONbuf);
+	else {
+		dest[0] = 0;
+		LogMsg ("JSON result too long for the server message, sending the text result only.\n");
+	}
+}
+
 /****************************************************************************/
 /*               Routines to process worktodo.txt files                     */
 /****************************************************************************/
@@ -2560,7 +2579,7 @@ void pct_complete_from_savefile (
 {
 	int	fd, res;
 	uint32_t version;
-	char	filename[32];
+	char	filename[SAVE_FILENAME_SIZE];
 
 /* Generate the save file name */
 
@@ -3492,7 +3511,7 @@ int writeWorkToDoFile (
 
 	    for (w = WORK_UNITS[tnum].first; w != NULL; w = w->next) {
 		char	idbuf[100];
-		char	buf[4096];
+		char	*buf;
 
 /* Do not output deleted lines */
 
@@ -3503,6 +3522,20 @@ int writeWorkToDoFile (
 		if (w == WORK_UNITS[tnum].first &&
 		    w->work_type == WORK_NONE &&
 		    w->comment[0] == '[') continue;
+
+/* Allocate a line buffer.  Comments, known factors, and GMP-ECM file names are copied from worktodo.txt and can be */
+/* as long as a worktodo.txt line.  Everything else in a line is under 1024 characters (the largest is "Pminus1=", */
+/* idbuf (< 100), %.0f of k (<= 310), b/n/c/B1/B2/B2_start (6 x 21), %.0f of a float sieve_depth (<= 41), quotes and newline). */
+
+		buf = (char *) malloc (1024 + (w->comment != NULL ? strlen (w->comment) : 0) +
+				       (w->known_factors != NULL ? strlen (w->known_factors) : 0) +
+				       (w->gmp_ecm_file != NULL ? strlen (w->gmp_ecm_file) : 0));
+		if (buf == NULL) {
+			_close (fd);
+			gwmutex_unlock (&WORKTODO_MUTEX);
+			return (OutOfMemory (MAIN_THREAD_NUM));
+		}
+		buf[0] = 0;
 
 /* Format the optional assignment id */
 
@@ -3617,11 +3650,13 @@ int writeWorkToDoFile (
 		strcat (buf, "\n");
 		len = (unsigned int) strlen (buf);
 		if (_write (fd, buf, len) != len) {
+			free (buf);
 write_error:		OutputBoth (MAIN_THREAD_NUM, "Error writing worktodo.txt file\n");
 			_close (fd);
 			gwmutex_unlock (&WORKTODO_MUTEX);
 			return (STOP_FILE_IO_ERROR);
 		}
+		free (buf);
 		last_line_was_blank = (len == 1);
 	    }
 	}
@@ -4370,7 +4405,7 @@ void invalidateNextRollingAverageUpdate (void)
 
 void tempFileName (
 	struct work_unit *w,
-	char	*buf)
+	char	*buf)		/* SAVE_FILENAME_SIZE bytes */
 {
 	char	c;
 	unsigned long p;
@@ -4409,7 +4444,7 @@ void tempFileName (
 /* file names are renamed. */
 
 	if (w->work_type == WORK_PFACTOR) {
-		char	v258_filename[32];
+		char	v258_filename[SAVE_FILENAME_SIZE];
 		sprintf (v258_filename, "p%s", buf+1);
 		rename (v258_filename, buf);
 	}
@@ -4420,12 +4455,12 @@ void tempFileName (
 /* are renamed. */
 
 	if (w->c == 1 && buf[0] == 'm') {
-		char	v258_filename[32];
+		char	v258_filename[SAVE_FILENAME_SIZE];
 		sprintf (v258_filename, "l%s", buf+1);
 		rename (v258_filename, buf);
 	}
 	if (w->c == 1 && buf[0] == 'e') {
-		char	v258_filename[32];
+		char	v258_filename[SAVE_FILENAME_SIZE];
 		sprintf (v258_filename, "d%s", buf+1);
 		rename (v258_filename, buf);
 	}
@@ -4437,7 +4472,7 @@ void tempFileName (
 /* upgrading problems, old save file names are renamed. */
 
 	if (w->k != 1.0 || labs(w->c) != 1) {
-		char	v258_filename[32];
+		char	v258_filename[SAVE_FILENAME_SIZE];
 		strcpy (v258_filename, buf);
 		buf[1] = 0;
 		if (w->k != 1.0) sprintf (buf+strlen(buf), "%g", fmod (w->k, 1000000.0));
@@ -4474,21 +4509,21 @@ int fileExists (
 /* Create a file name from an optional directory name and a file name.  The directory name */
 /* may or may not end in a slash. */
 
-void DirPlusFilename (
+int DirPlusFilename (			// Returns FALSE (dir unchanged) if the full pathname does not fit in dirsize bytes
 	char	*dir,				// Full pathname returned here
+	size_t	dirsize,			// Size of the dir buffer
 	const char *filename)
 {
-	if (dir[0]) {
-		char	slash = getDirectorySeparator ();
-		int	len = (int) strlen (dir);
+	size_t	len = strlen (dir);
+	int	add_slash = (len && dir[len-1] != getDirectorySeparator ());
 
-		// Append slash if not already there
-		if (dir[len-1] != slash) {
-			dir[len] = slash;
-			dir[len+1] = 0;
-		}
+	if (len + add_slash + strlen (filename) >= dirsize) return (FALSE);
+	if (add_slash) {			// Append slash if not already there
+		dir[len] = getDirectorySeparator ();
+		dir[len+1] = 0;
 	}
 	strcat (dir, filename);
+	return (TRUE);
 }
 
 /* Routines to read and write a byte array from and to a save file */
@@ -4950,27 +4985,29 @@ int write_footer (
 /* offline, then prepend other information. */
 
 void formatMsgForResultsFile (
-	char	*buf,		/* Msg to prepend to, 200 characters max */
+	char	*buf,		/* Msg to prepend to, 200 characters max (buf must hold at least 201 bytes) */
 	struct work_unit *w)
 {
 	char	newbuf[2000];
 
-/* Output a USERID/COMPID prefix for result messages */
+/* Output a USERID/COMPID prefix for result messages.  The input can be longer than newbuf (e.g. a found factor */
+/* with thousands of digits), so bound the copy -- the result is truncated to 200 characters below anyway. */
 
 	if (!USERID[0])
-		strcpy (newbuf, buf);
+		snprintf (newbuf, sizeof (newbuf), "%s", buf);
 	else if (!COMPID[0])
-		sprintf (newbuf, "UID: %s, %s", USERID, buf);
+		snprintf (newbuf, sizeof (newbuf), "UID: %s, %s", USERID, buf);
 	else
-		sprintf (newbuf, "UID: %s/%s, %s", USERID, COMPID, buf);
+		snprintf (newbuf, sizeof (newbuf), "UID: %s/%s, %s", USERID, COMPID, buf);
 
 /* Output the assignment ID too.  That alone should be enough info to */
 /* credit the correct userID.  However, we still output the user ID as it */
 /* is far more human friendly than an assignment ID. */
 
-	if (w->assignment_uid[0])
-		sprintf (newbuf + strlen (newbuf) - 1,
-			 ", AID: %s\n", w->assignment_uid);
+	if (w->assignment_uid[0] && newbuf[0]) {
+		size_t	len = strlen (newbuf) - 1;
+		snprintf (newbuf + len, sizeof (newbuf) - len, ", AID: %s\n", w->assignment_uid);
+	}
 
 /* Now truncate the message to 200 characters */
 
@@ -5019,7 +5056,7 @@ static	time_t	last_time[3] = {0};
 		if (write_interval && this_time - last_time[which_results_file] > (time_t) write_interval) {
 			char	tmpbuf[200], buf[203];
 			last_time[which_results_file] = this_time;
-			timestamp (tmpbuf, 1);
+			timestamp (tmpbuf, sizeof (tmpbuf), 1);
 			sprintf (buf, "[%s]\n", tmpbuf);
 			(void) _write (fd, buf, (int) strlen (buf));
 		}
@@ -5512,7 +5549,7 @@ static	time_t	last_time = 0;
 	if (this_time - last_time > 300) {
 		char	tmpbuf[50], buf[100];
 		last_time = this_time;
-		timestamp (tmpbuf, 1);
+		timestamp (tmpbuf, sizeof (tmpbuf), 1);
 		sprintf (buf, "[%s - ver %s]\n", tmpbuf, VERSION);
 		(void) _write (fd, buf, (unsigned int) strlen (buf));
 	}

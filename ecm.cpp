@@ -1172,20 +1172,30 @@ int setN (
 /* Process each factor */
 
 		for (char *p = w->known_factors; ; ) {
-			char	*comma, facstr[500];
+			char	*comma, *facstr;
+			size_t	faclen;
 			int	res;
 
-/* Get the factor - raise error if it is less than or equal to one */
+/* Get the factor - raise error if it is less than or equal to one.  A known factor from worktodo.txt can have */
+/* any number of digits, so copy it to a buffer of the right size. */
 
 			comma = strchr (p, ',');
-			if (comma != NULL) *comma = 0;
-			strcpy (facstr, p);
-			if (comma != NULL) *comma = ',';
+			faclen = (comma != NULL) ? (size_t) (comma - p) : strlen (p);
+			facstr = (char *) malloc (faclen + 1);
+			if (facstr == NULL) {
+				mpz_clear (__N);
+				mpz_clear (__f);
+				mpz_clear (__r);
+				return (OutOfMemory (thread_num));
+			}
+			memcpy (facstr, p, faclen);
+			facstr[faclen] = 0;
 			res = mpz_set_str (__f, facstr, 10);
 			if (res < 0 || mpz_cmp_ui (__f, 1) <= 0) {
 				char	kbnc[80];
 				gw_as_string (kbnc, w->k, w->b, w->n, w->c);
-				sprintf (buf, "Error parsing known factors of %s near: '%s'\n", kbnc, facstr);
+				sprintf (buf, "Error parsing known factors of %s near: '%.1000s'\n", kbnc, facstr);
+				free (facstr);
 				OutputStr (thread_num, buf);
 				mpz_clear (__N);
 				mpz_clear (__f);
@@ -1200,7 +1210,8 @@ int setN (
 			if (mpz_sgn (__r) != 0) {		// Is remainder non-zero
 				char	kbnc[80];
 				gw_as_string (kbnc, w->k, w->b, w->n, w->c);
-				sprintf (buf, "%s does not divide %s\n", facstr, kbnc);
+				sprintf (buf, "%.1000s does not divide %s\n", facstr, kbnc);
+				free (facstr);
 				OutputBoth (thread_num, buf);
 				mpz_clear (__N);
 				mpz_clear (__f);
@@ -1211,6 +1222,7 @@ int setN (
 
 /* Skip to next factor in list */
 
+			free (facstr);
 			if (comma == NULL) break;
 			p = comma + 1;
 		}
@@ -6812,7 +6824,7 @@ int ecm (
 	double	base_pct_complete, one_relp_pct;
 	int	i;
 	unsigned int memused;
-	char	filename[32], ftree_filename[40], buf[255], JSONbuf[4000], fft_desc[200];
+	char	filename[SAVE_FILENAME_SIZE], ftree_filename[SAVE_FILENAME_SIZE], buf[255], JSONbuf[4000], fft_desc[200];
 	int	res, stop_reason, delayed_stop_reason, stage, first_iter_msg;
 	int	msglen, continueECM, prpAfterEcmFactor;
 	char	*str, *msg;
@@ -6869,7 +6881,7 @@ restart:
 	if (w->gmp_ecm_file != NULL) {
 		ecmdata.gmp_ecm_file = fopen (w->gmp_ecm_file, "r");
 		if (ecmdata.gmp_ecm_file == NULL) {
-			sprintf (buf, "File named '%s' could not be opened.\n", w->gmp_ecm_file);
+			snprintf (buf, sizeof (buf), "File named '%s' could not be opened.\n", w->gmp_ecm_file);
 			OutputStr (thread_num, buf);
 			stop_reason = STOP_FILE_IO_ERROR;
 			goto exit;
@@ -6888,7 +6900,7 @@ restart:
 		mpz_t n;
 		mpz_init (n);
 		if (!peek_resumefile_line (ecmdata.gmp_ecm_file, n)) {
-			sprintf (buf, "Could not find line containing N= in file '%s'.\n", w->gmp_ecm_file);
+			snprintf (buf, sizeof (buf), "Could not find line containing N= in file '%s'.\n", w->gmp_ecm_file);
 			OutputStr (thread_num, buf);
 			stop_reason = STOP_FILE_IO_ERROR;
 			goto exit;
@@ -7280,7 +7292,7 @@ if (w->n == 604) {
 			fclose (ecmdata.gmp_ecm_file);
 			ecmdata.gmp_ecm_file = fopen (w->gmp_ecm_file, "r");
 			if (ecmdata.gmp_ecm_file == NULL) {
-				sprintf (buf, "File named '%s' could not be opened.\n", w->gmp_ecm_file);
+				snprintf (buf, sizeof (buf), "File named '%s' could not be opened.\n", w->gmp_ecm_file);
 				OutputStr (thread_num, buf);
 				stop_reason = STOP_FILE_IO_ERROR;
 				goto exit;
@@ -9989,7 +10001,7 @@ no_more_curves:
 		pkt.curves = w->curves_to_do;
 		pkt.fftlen = ecmdata.stage1_fftlen;
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 
@@ -10066,7 +10078,12 @@ bingo:	stage = (ecmdata.state > ECM_STATE_MIDSTAGE) ? 2 : (ecmdata.state > ECM_S
 /* "curves":5, "average-b2":5127843, "fft-length":5120, "security-code":"39AB1238", */
 /* "program":{"name":"prime95", "version":"29.5", "build":"8"}, "timestamp":"2019-01-15 23:28:16", */
 /* "user":"gw_2", "cpu":"work_computer", "aid":"FF00AA00FF00AA00FF00AA00FF00AA00"} */
+/* The factor can have thousands of digits.  The 4000-byte JSONbuf only has room for the other fields (N <= 2005, */
+/* known factors <= 1232, the rest < 600), so this block shadows it with a buffer that also has room for the factor. */
 
+	{
+	char	*JSONbuf = (char *) malloc (strlen (str) + 4000);
+	if (JSONbuf == NULL) goto oom;
 	strcpy (JSONbuf, "{\"status\":\"F\"");
 	if (w->n) JSONaddExponent (JSONbuf, w);
 	else if (strlen (ecmdata.N_full_string_rep) < 2000) sprintf (JSONbuf+strlen(JSONbuf), ", \"N\":%s", ecmdata.N_full_string_rep);
@@ -10129,8 +10146,10 @@ bingo:	stage = (ecmdata.state > ECM_STATE_MIDSTAGE) ? 2 : (ecmdata.state > ECM_S
 		pkt.stage = stage;
 		pkt.fftlen = ecmdata.stage1_fftlen;
 		pkt.done = !continueECM;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
+	}
+	free (JSONbuf);
 	}
 
 /* If continuing ECM, subtract the curves we just reported from the worktodo count of curves to run. */
@@ -11704,7 +11723,7 @@ int pminus1 (
 	unsigned long len;
 	int	maxerr_restart_count = 0;
 	unsigned long maxerr_fftlen = 0;
-	char	filename[32], buf[255], JSONbuf[4000], testnum[100];
+	char	filename[SAVE_FILENAME_SIZE], buf[255], JSONbuf[4000], testnum[100];
 	int	pminus1_base, res, stop_reason, saving, near_fft_limit, echk;
 	double	one_over_len, one_over_B, base_pct_complete, one_relp_pct;
 	uint64_t last_output, last_output_t, last_output_r;
@@ -13781,7 +13800,7 @@ msg_and_exit:
 		pkt.B2 = pm1data.C;
 		pkt.fftlen = pm1data.stage1_fftlen;
 		pkt.done = (w->work_type == WORK_PMINUS1 || w->work_type == WORK_PFACTOR);
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 
@@ -13888,7 +13907,12 @@ bingo:	if (pm1data.state < PM1_STATE_MIDSTAGE)
 /* "b1":50000, "b2":5000000, "d":2310, "poly1-size":240, "poly2-size": 600, "fft-length":5120, */
 /* "security-code":"39AB1238", "program":{"name":"prime95", "version":"29.5", "build":"8"}, "timestamp":"2019-01-15 23:28:16", */
 /* "user":"gw_2", "cpu":"work_computer", "aid":"FF00AA00FF00AA00FF00AA00FF00AA00"} */
+/* The factor can have thousands of digits.  The 4000-byte JSONbuf only has room for the other fields, so this block */
+/* shadows it with a buffer that also has room for the factor. */
 
+	{
+	char	*JSONbuf = (char *) malloc (strlen (str) + 4000);
+	if (JSONbuf == NULL) goto oom;
 	strcpy (JSONbuf, "{\"status\":\"F\"");
 	JSONaddExponent (JSONbuf, w);
 	strcat (JSONbuf, ", \"worktype\":\"P-1\"");
@@ -13930,8 +13954,10 @@ bingo:	if (pm1data.state < PM1_STATE_MIDSTAGE)
 		pkt.B2 = (pm1data.state < PM1_STATE_MIDSTAGE ? 0 : pm1data.C);
 		pkt.fftlen = gwfftlen (&pm1data.gwdata);
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
+	}
+	free (JSONbuf);
 	}
 
 /* Free save files.  If LL testing, free those save files too. */
@@ -14441,7 +14467,7 @@ int pfactor (
 /* Output a message that P-1 factoring is about to begin */
 
 	gw_as_string (testnum, w->k, w->b, w->n, w->c);
-	sprintf (buf, "Optimal P-1 factoring of %s using up to %luMB of memory.\n", testnum, max_mem (thread_num));
+	snprintf (buf, sizeof (buf), "Optimal P-1 factoring of %s using up to %luMB of memory.\n", testnum, max_mem (thread_num));
 	OutputStr (thread_num, buf);
 	if (w->known_factors != NULL) {
 		OutputStr (thread_num, "Skipping known factors: ");
@@ -15457,7 +15483,7 @@ int pplus1 (
 	giant	factor;		/* Factor found, if any */
 	unsigned int memused;
 	int	i, res, stop_reason, first_iter_msg, saving, near_fft_limit, echk;
-	char	filename[32], buf[255], JSONbuf[4000], testnum[100];
+	char	filename[SAVE_FILENAME_SIZE], buf[255], JSONbuf[4000], testnum[100];
 	uint64_t sieve_start, next_prime;
 	double	one_over_B, base_pct_complete, one_relp_pct;
 	uint64_t last_output, last_output_t, last_output_r;
@@ -16560,7 +16586,7 @@ msg_and_exit:
 		pkt.B2 = pp1data.C;
 		pkt.fftlen = pp1data.stage1_fftlen;
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 	}
 
@@ -16660,7 +16686,12 @@ bingo:	if (pp1data.state < PP1_STATE_MIDSTAGE)
 /* "b1":50000, "b2":5000000, "start":"2/7", "fft-length":5120, "security-code":"39AB1238", */
 /* "program":{"name":"prime95", "version":"30.6", "build":"1"}, "timestamp":"2021-01-15 23:28:16", */
 /* "user":"gw_2", "cpu":"work_computer", "aid":"FF00AA00FF00AA00FF00AA00FF00AA00"} */
+/* The factor can have thousands of digits.  The 4000-byte JSONbuf only has room for the other fields, so this block */
+/* shadows it with a buffer that also has room for the factor. */
 
+	{
+	char	*JSONbuf = (char *) malloc (strlen (str) + 4000);
+	if (JSONbuf == NULL) goto oom;
 	strcpy (JSONbuf, "{\"status\":\"F\"");
 	JSONaddExponent (JSONbuf, w);
 	strcat (JSONbuf, ", \"worktype\":\"P+1\"");
@@ -16697,8 +16728,10 @@ bingo:	if (pp1data.state < PP1_STATE_MIDSTAGE)
 		pkt.B2 = (pp1data.state < PP1_STATE_MIDSTAGE ? 0 : pp1data.C);
 		pkt.fftlen = pp1data.stage1_fftlen;
 		pkt.done = TRUE;
-		strcpy (pkt.JSONmessage, JSONbuf);
+		JSONcopyToPacket (pkt.JSONmessage, sizeof (pkt.JSONmessage), JSONbuf);
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
+	}
+	free (JSONbuf);
 	}
 
 /* Free save files (especially big ones created during stage 2) */
