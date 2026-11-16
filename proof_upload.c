@@ -352,8 +352,8 @@ void ProofUpload (char *filename)
 
 		// Read chunk from file
 		_fseeki64 (fd, chunk_start, SEEK_SET);
-		datasize = (int) (chunk_end - chunk_start + 1);
-		if (datasize > max_chunk_size) datasize = max_chunk_size;
+		if (chunk_end - chunk_start + 1 > (uint64_t) max_chunk_size) datasize = max_chunk_size;
+		else datasize = (int) (chunk_end - chunk_start + 1);
 		datasize = (int) fread (chunk, 1, datasize, fd);
 
 		if (datasize <= 0) {
