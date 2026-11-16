@@ -2761,6 +2761,16 @@ int addToWorkUnitArray (
 	return (0);
 }
 
+/* Return the largest number of bits the FFT code can handle on this CPU.  This mirrors the sanity check in gwsetup. */
+
+static unsigned long maxFFTbits (void)
+{
+	return ((CPU_FLAGS & CPU_AVX512F) ? MAX_PRIME_AVX512 :
+		(CPU_FLAGS & CPU_FMA3) ? MAX_PRIME_FMA3 :
+		(CPU_FLAGS & CPU_AVX) ? MAX_PRIME_AVX :
+		(CPU_FLAGS & CPU_SSE2) ? MAX_PRIME_SSE2 : MAX_PRIME);
+}
+
 /* Parse one worktodo.txt line */
 
 int parseWorkToDoLine (
@@ -3159,12 +3169,15 @@ int parseWorkToDoLine (
 	}
 	if ((w->work_type == WORK_TEST || w->work_type == WORK_DBLCHK || w->work_type == WORK_ADVANCEDTEST) &&
 	    (w->n < MIN_PRIME ||
-	     (w->minimum_fftlen == 0 &&
-	      w->n > (unsigned long) ((CPU_FLAGS & CPU_AVX512F) ? MAX_PRIME_AVX512 :
-				      (CPU_FLAGS & CPU_FMA3) ? MAX_PRIME_FMA3 :
-				      (CPU_FLAGS & CPU_AVX) ? MAX_PRIME_AVX :
-				      (CPU_FLAGS & CPU_SSE2) ? MAX_PRIME_SSE2 : MAX_PRIME)))) {
+	     (w->minimum_fftlen == 0 && w->n > maxFFTbits ()))) {
 		sprintf (buf, "Error: Worktodo.txt file contained bad LL exponent: %ld\n", w->n);
+		OutputBoth (MAIN_THREAD_NUM, buf);
+		goto illegal_line;
+	}
+	if ((w->work_type == WORK_PRP || w->work_type == WORK_PMINUS1 || w->work_type == WORK_PPLUS1 ||
+	     w->work_type == WORK_ECM || w->work_type == WORK_CERT) &&
+	    w->gmp_ecm_file == NULL && w->minimum_fftlen == 0 && log2 ((double) w->b) * (double) w->n > (double) maxFFTbits ()) {
+		sprintf (buf, "Error: Worktodo.txt file contained number too large for the FFT code: %.17g*%lu^%lu%+ld\n", w->k, w->b, w->n, w->c);
 		OutputBoth (MAIN_THREAD_NUM, buf);
 		goto illegal_line;
 	}
