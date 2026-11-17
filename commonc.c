@@ -5609,7 +5609,8 @@ void readMessage (
 	int	fd,
 	long	*offset,	/* Offset of the message */
 	short	*msgType,	/* 0 = no message */
-	void	*msg)
+	void	*msg,
+	size_t	msgsize)	/* Size of the buffer msg points to */
 {
 	short	datalen;
 
@@ -5619,6 +5620,19 @@ void readMessage (
 		*offset = _lseek (fd, 0, SEEK_CUR);
 		if (_read (fd, msgType, sizeof (short)) != sizeof (short)) break;
 		if (_read (fd, &datalen, sizeof (short)) != sizeof (short)) break;
+
+/* The length comes from the file, so never trust it.  A negative length cannot be skipped over, so stop reading the spool file. */
+/* A message too big for our buffer cannot be one we wrote: skip over it rather than overflowing the buffer. */
+
+		if (datalen < 0) {
+			LogMsg ("Corrupt spool file.  Remaining messages ignored.\n");
+			break;
+		}
+		if ((size_t) datalen > msgsize) {
+			LogMsg ("Corrupt spool file.  Message ignored.\n");
+			if (_lseek (fd, datalen, SEEK_CUR) < 0) break;
+			continue;
+		}
 
 /* Read the body of the message */
 
@@ -6280,7 +6294,7 @@ retry:
 		if (fd < 0) goto locked_leave;
 		_lseek (fd, msg_offset, SEEK_SET);
 		memset (&msg, 0, sizeof (msg));		// Clear msg in case spool file was written by an older prime95 version
-		readMessage (fd, &msg_offset, &msgType, &msg);
+		readMessage (fd, &msg_offset, &msgType, &msg, sizeof (msg));
 		new_offset = _lseek (fd, 0, SEEK_CUR);
 		_close (fd);
 		gwmutex_unlock (&SPOOL_FILE_MUTEX);
