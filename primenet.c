@@ -261,13 +261,30 @@ int curl_trace (
 //               and downloads the server result page
 */
 
+/* Size of the buffer format_args builds the HTTP GET arguments in.  Every variable-length piece of the arguments is a string field of the */
+/* packet passed through armor (curl_easy_escape), which at most triples its length, so 3 * sizeof (largest packet) bounds those pieces. */
+/* The 4096 covers the argument names, the numbers formatted with sprintf, and the security string secure_v5_url appends. */
+/* The compile-time checks below make the build fail if a packet ever grows past what this size allows for. */
+
+#define PRIMENET_ARGS_SIZE	16384
+#define PRIMENET_ARGS_CHECK(t)	typedef char args_size_check_##t[(3 * sizeof (struct t) + 4096 <= PRIMENET_ARGS_SIZE) ? 1 : -1]
+PRIMENET_ARGS_CHECK (primenetUpdateComputerInfo);
+PRIMENET_ARGS_CHECK (primenetProgramOptions);
+PRIMENET_ARGS_CHECK (primenetGetAssignment);
+PRIMENET_ARGS_CHECK (primenetRegisterAssignment);
+PRIMENET_ARGS_CHECK (primenetAssignmentProgress);
+PRIMENET_ARGS_CHECK (primenetAssignmentResult);
+PRIMENET_ARGS_CHECK (primenetAssignmentUnreserve);
+PRIMENET_ARGS_CHECK (primenetBenchmarkData);
+PRIMENET_ARGS_CHECK (primenetPingServer);
+
 int pnHttpServerCURL (char *pbuf, unsigned cbuf, char* postargs)
 {
 	CURL	*curl;
 	CURLcode res;
 	int	try_proxy, debug;
 	char	szSITE[120];
-	char	url[4096], buf[4150], errbuf[CURL_ERROR_SIZE];
+	char	url[PRIMENET_ARGS_SIZE + 200], buf[PRIMENET_ARGS_SIZE + 256], errbuf[CURL_ERROR_SIZE];	/* "http://" + szSITE + ":port" + szFILE + args */
 	char	szProxyHost[PROXY_HOST_BUFSIZE];
 	char	szProxyUser[PROXY_USER_BUFSIZE];
 	char	szProxyPassword[PROXY_PASSWORD_BUFSIZE];
@@ -1214,7 +1231,7 @@ void LoadPrimenet ()
 int PRIMENET (short operation, void *pkt)
 {
 	int	status;
-	char args[4096];		/* formatted arguments buffer */
+	char args[PRIMENET_ARGS_SIZE];	/* formatted arguments buffer */
 	char pbuf[4096];		/* return page buffer */
 
 /* Assemble GET/POST arguments */
